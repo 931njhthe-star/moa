@@ -1,0 +1,4 @@
+# 테스트·CI용 — 운영 이미지(Dockerfile)에는 requirements.txt만 설치한다
+-r requirements.txt
+pytest
+pytest-cov

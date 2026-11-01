@@ -1,0 +1,15 @@
+# 이미지에 넣지 않을 것 — 작게·안전하게 만든다 (Day 6과 같은 규칙)
+# .env가 들어가면 API 키가 이미지에 박혀 레지스트리(ECR·GHCR)까지 올라간다
+.env
+# 키 파일 — .gitignore와 같은 규칙. 작업 폴더에 두고 docker build하면 이미지에 들어간다
+*.pem
+*accessKeys.csv
+__pycache__/
+*.pyc
+.venv/
+.git/
+tests/
+# 로그는 컨테이너 안에서 새로 쌓는다 (내 PC의 로그를 이미지에 넣지 않는다)
+logs/
+.pytest_cache/
+.coverage

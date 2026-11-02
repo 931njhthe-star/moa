@@ -1,0 +1,23 @@
+# 로컬 개발용 — 백엔드와 프론트엔드를 한 번에 띄운다 (docker compose up --build)
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # slim 이미지에는 curl이 없어서 파이썬으로 /health를 확인한다
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8501:8501"
+    environment:
+      # 컨테이너끼리는 서비스 이름(backend)으로 접속한다
+      BACKEND_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy   # 백엔드 /health가 성공한 뒤에 시작

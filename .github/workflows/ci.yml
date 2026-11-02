@@ -1,0 +1,59 @@
+# CI 워크플로우
+name: CI
+
+on:
+  push:
+    branches: [main, dev]   # main, dev 브랜치에 push될 때 실행
+  pull_request:
+    branches: [main, dev]   # main, dev 브랜치로 향하는 PR일 때 실행
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend   # 백엔드 폴더 기준으로 명령 실행
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: pip install -r requirements-dev.txt
+
+      - name: 테스트 실행
+        # 커버리지 85% 미만이면 테스트가 모두 통과해도 실패 → 테스트를 지우는 변경을 막는다
+        run: pytest -q --cov=app --cov-fail-under=85
+
+  test-frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend  # 프론트엔드 폴더 기준으로 명령 실행
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: pip install -r requirements-dev.txt
+
+      - name: 테스트 실행
+        # 화면(app.py)은 제외하고 백엔드 호출부(api_client)만 커버리지를 잰다
+        run: pytest -q --cov=api_client --cov-fail-under=85
+
+  build:
+    needs: [test-backend, test-frontend]   # 두 테스트가 모두 성공해야 빌드된다
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 백엔드 Docker 이미지 빌드 (빌드 가능 여부만 검증)
+        run: docker build -t product-copy-service:${{ github.sha }} backend
+
+      - name: 프론트엔드 Docker 이미지 빌드 (빌드 가능 여부만 검증)
+        run: docker build -t product-copy-frontend:${{ github.sha }} frontend

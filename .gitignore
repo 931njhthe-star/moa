@@ -1,0 +1,9 @@
+# pytest --cov가 만드는 측정 결과 파일
+.coverage
+__pycache__/
+.pytest_cache/
+.env
+.venv/
+*.pem
+# IAM 콘솔에서 내려받은 액세스 키 파일 (<사용자명>_accessKeys.csv)
+*accessKeys.csv

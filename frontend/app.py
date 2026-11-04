@@ -1,37 +1,19 @@
-# 상품 소개문 검사 화면 — Streamlit (백엔드 /check를 호출해 결과를 보여준다)
-import httpx
+# Moa 화면 진입점 — 페이지 등록만 한다
+#
+# 화면 4종의 내용은 `screens/` 안에 있고, URL 규약은 `moa/nav.py`에 있다.
+#   /        SCR-001  A. 주문 시작 (기본 페이지)
+#   /s       SCR-002  B. 주문 정리
+#   /order   SCR-005  E. 주문서
+#   /ops     SCR-006  O. 운영 대시보드
+#
+# 사이드바 네비게이션을 쓰지 않는다 — 화면 제목 · 사이드바 · 진행 막대가 없다(P-06 U-2).
+# 이동은 각 화면의 하단 바 보조 버튼 · 주 버튼과 헤더 [운영 대시보드] · [나가기]로만 한다.
 import streamlit as st
 
-from api_client import BACKEND_URL, check_copy, is_backend_alive
+from moa import nav
 
-st.set_page_config(page_title="상품 소개문 검사기")
-st.title("상품 소개문 검사기")
+# set_page_config는 앱 실행마다 **첫 Streamlit 명령**이어야 하므로 여기서 한 번만 한다.
+# 화면 제목은 브라우저 탭 제목이며 화면 안에는 두지 않는다(P-06 U-2).
+st.set_page_config(page_title="Moa", layout="wide", initial_sidebar_state="collapsed")
 
-with st.sidebar:
-    st.caption(f"백엔드: {BACKEND_URL}")
-    if is_backend_alive():
-        st.success("백엔드 연결됨")
-    else:
-        st.error("백엔드에 연결할 수 없습니다")
-
-with st.form("check_form"):
-    name = st.text_input("상품명", placeholder="숲속 캠핑 의자")
-    price = st.text_input("가격", placeholder="29,900원")
-    text = st.text_area("소개문", height=150)
-    submitted = st.form_submit_button("검사하기")
-
-if submitted:
-    if not (name and price and text):
-        st.warning("상품명, 가격, 소개문을 모두 입력하세요.")
-    else:
-        try:
-            result = check_copy(text, name, price)
-        except httpx.HTTPError as e:
-            st.error(f"검사 요청에 실패했습니다: {e}")
-        else:
-            if result["passed"]:
-                st.success("모든 규칙을 지켰습니다.")
-            else:
-                st.error(f"위반 {len(result['violations'])}건")
-                for v in result["violations"]:
-                    st.write(f"- {v}")
+st.navigation(list(nav.pages().values()), position="hidden").run()

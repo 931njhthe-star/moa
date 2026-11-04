@@ -126,7 +126,7 @@ def test_menu_agent_called_only_for_rule_unresolved(state, row, expect):
     assert nodes._needs_menu_agent(row, state) is expect
 
 
-def test_review_agent_gives_opinion_without_verdict_power(service):
+def test_review_agent_gives_opinion_without_verdict_power(service, monkeypatch):
     replies, seen = service
     replies += [step(ReviewStep, action="call_tool", tool="list_order_items", args_json="{}"),
                 step(ReviewStep, verdicts=[{"item_id": "ORD-0001-it_01", "evidence_message_ids": ["m2"],
@@ -135,7 +135,9 @@ def test_review_agent_gives_opinion_without_verdict_power(service):
                                             "verdict": "unsure"}])]
     import app.tools.order_tools as order_tools
 
-    order_tools.db.fetch_all = lambda *a, **k: []
+    # monkeypatch 로 바꾼다 — order_tools.db 는 app.db 모듈 자체라, 직접 대입하면 이 테스트 뒤의 **모든 테스트**에서
+    # DB 조회가 빈 결과가 된다(CI 전체 실행에서 test_live_flow 7건이 매장 판별 · 금액 · 질문 없음으로 실패 · 2026-11-04)
+    monkeypatch.setattr(order_tools.db, "fetch_all", lambda *a, **k: [])
     row = {"item_id": "ORD-0001-it_01", "person": "김민수", "menu_name": "아이스 아메리카노", "quantity": 1,
            "review_reason_text": "어느 잔을 취소할지 확인해 주세요"}
     opinion, calls = agents.review_agent(SESSION, row, [], route="cancel", service="primary", trace_id=None)

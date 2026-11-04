@@ -115,11 +115,13 @@ def change_hint(brand: dict | None) -> None:
 
 def bottom_bar(*, back_label: str | None, back_key: str, primary_label: str,
                primary_key: str, primary_enabled: bool, blocked_reason: str | None = None,
-               primary_icon: str | None = None, warn: bool = False, primary_slot=None):
+               primary_icon: str | None = None, warn: bool = False, primary_slot=None,
+               blocked_action=None):
     """하단 고정 바 — 왼쪽 보조 버튼 + 오른쪽 (이유 한 줄 + 주 버튼 하나)(U-1).
 
     주 버튼이 비활성이면 **이유를 버튼 왼쪽에 한 줄** 적는다. 그 문구도 서버가 만든다.
     `primary_slot`을 주면 주 버튼 대신 그 함수를 부른다(SCR-005 공유하기처럼 버튼이 대화상자를 여는 경우).
+    `blocked_action`을 주면 막는 이유가 **누를 수 있는 버튼**이 되고, 누르면 그 함수를 부른다.
     돌려주는 값: (뒤로 눌림, 주 버튼 눌림)
     """
     back_clicked = primary_clicked = False
@@ -133,7 +135,15 @@ def bottom_bar(*, back_label: str | None, back_key: str, primary_label: str,
                           vertical_alignment="center", width="content"):
             if not primary_enabled and blocked_reason:
                 cls = "moa-barhint moa-barhint-warn" if warn else "moa-barhint"
-                st.html(f'<div class="{cls}">{_esc(blocked_reason)}</div>')
+                if blocked_action:
+                    # 막는 이유를 누르면 그것을 처리할 수 있는 화면으로 간다 (2026-11-05 3차 보고 7번).
+                    # 이유만 적어 두면 담당자는 어디서 풀어야 하는지 알 수 없다
+                    with st.container(key=f"{primary_key}_blocked"):
+                        if st.button(blocked_reason, key=f"{primary_key}_blockedgo",
+                                     icon=":material/arrow_forward:", icon_position="right"):
+                            blocked_action()
+                else:
+                    st.html(f'<div class="{cls}">{_esc(blocked_reason)}</div>')
             if primary_slot is not None:
                 primary_slot()
             else:

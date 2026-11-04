@@ -17,7 +17,15 @@ _TEMPLATES = {
     # `{source}` 가 조사까지 들고 온다(`_source_clause`) — 받침에 따라 "로 / 으로"가 갈린다
     "reference_menu": '{person} 님 {quote}는 {source} 이해했어요. 메뉴를 골라 주세요',
     "unregistered_menu": '{person} 님 {quote}는 메뉴판에서 찾지 못했어요. 메뉴를 골라 주세요',
+    # 후보가 하나도 없을 때 — 메뉴를 말하지 않았거나 알아듣지 못한 경우다. 사정을 설명하고
+    # [메뉴 선택하기] · [주문 아니에요] 둘을 준다 (2026-11-05 사용자 보고 2번)
+    "menu_not_said": '{person} 님 {quote}에서는 메뉴를 알아듣지 못했어요. '
+                     '메뉴를 고르거나, 주문이 아니면 빼 주세요',
     "ambiguous_target": '{person} 님 주문 중 어느 것을 말하는지 골라 주세요',
+    # 답장에서 올라온 질문 — 무엇을 보고 묻는지 모르면 답할 수 없다. 답장 원문을 그대로 인용한다
+    # (2026-11-05 보고 11번). 바꿀 값이 문장에 없으므로 버튼은 [그대로 둘게요] 하나 + 메뉴 찾기다
+    "ambiguous_target_reply": '{person} 님 답장 "{change}"는 {menu} 주문을 어떻게 바꿀까요? '
+                              '메뉴를 고르거나 그대로 둘 수 있어요',
     # 변경 · 취소 문장이 이 주문을 가리키는지 묻는다 — 질문은 항목마다 하나라서 "어느 것"이 아니라 "이것이 맞나요"다
     "ambiguous_target_change": '{person} 님 "{change}"는 {menu} 주문을 말하는 건가요?',
     # 대리 주문 — 후보가 하나면 "맞나요?", 둘 이상이면 "누구 주문인가요?" (2026-11-04 · INT-002)
@@ -28,6 +36,13 @@ _PERSON_MANY = '"{said}" 님의 {menu} 주문이에요. 누구 주문인가요?'
 # ambiguous_target 버튼 값 — 메뉴 이름이 아닌 답은 이 둘뿐이다(edits._apply_answer)
 TARGET_APPLY = "apply_change"
 TARGET_KEEP = "keep"
+# "주문 아니에요" — 그 항목을 뺀다(edits._apply_answer). 메뉴를 알아듣지 못한 질문에만 붙는다
+NO_ORDER = "no_order"
+
+
+def no_candidate_menu(item: dict, reason: str) -> bool:
+    """메뉴를 고를 후보가 하나도 없는 메뉴 질문인가 — 질문 문구와 버튼이 달라진다 (보고 2번)."""
+    return reason in ("unregistered_menu", "trait_expression") and not item.get("candidates")         and not item.get("traits") and not item.get("menu_id")
 
 # `ambiguous_spec` 안에서 무엇이 모호한가 — 사유 문자열(P-03 2.2 · DB CHECK · Q-02)은 그대로 두고
 # 질문 문구와 버튼만 나눈다. 순서가 규칙이다: 온도가 메뉴를 정하고, 메뉴가 정해져야 사이즈 버튼이 뜬다
@@ -65,6 +80,8 @@ _APPLIED = {
     "unregistered_menu": "{person} 님 주문을 {{answer}}로 했어요.",
     "ambiguous_target": "{person} 님 주문을 {{answer}}로 했어요.",
     "ambiguous_person": "{{answer}} 님 주문으로 정했어요.",
+    "menu_not_said": "{person} 님 주문을 {{answer}}로 했어요.",
+    "ambiguous_target_reply": "{person} 님 주문을 {{answer}}로 했어요.",
 }
 
 
@@ -82,12 +99,23 @@ def build(item: dict, *, session_id: str, brand_id: str, menu_version: str, seq:
 
     options, sort_basis = _options(item, brand_id=brand_id, menu_version=menu_version,
                                    reason=reason, change_text=change_text)
-    template = _TEMPLATES[reason]
+    if no_candidate_menu(item, reason):
+        # 사유(review_reason)는 그대로 둔다 — P-03 2.2 · DB CHECK · Q-02 채점 축이다. 문구와 버튼만 바꾼다
+        reason_for_text, options, sort_basis = "menu_not_said", [
+            {"value": NO_ORDER, "label": "주문 아니에요, 뺄게요", "reason_tags": []}], None
+    else:
+        reason_for_text = reason
+    template = _TEMPLATES[reason_for_text]
     key = spec_key(item.get("ambiguous_options")) if reason == "ambiguous_spec" else None
     if key:
         template = _SPEC_TEMPLATES[key]
     change = _head(change_text)
-    if reason == "ambiguous_target" and change:
+    if reason == "ambiguous_target" and item.get("reply_quote"):
+        change = _head(item["reply_quote"])
+        template = _TEMPLATES["ambiguous_target_reply"]
+        options = [{"value": TARGET_KEEP, "label": "그대로 둘게요", "reason_tags": []}]
+        sort_basis = "reference_message"
+    elif reason == "ambiguous_target" and change:
         template = _TEMPLATES["ambiguous_target_change"]
         # 같은 메뉴 두 잔이 후보일 때 질문이 똑같아지지 않게 옵션을 붙인다 — "아이스 아메리카노(톨 · 샷 추가)"
         labels = [menu_service.option_label(brand_id, menu_version, g, v)
@@ -110,7 +138,7 @@ def build(item: dict, *, session_id: str, brand_id: str, menu_version: str, seq:
         "question_text": text,
         "options": options,
         "sort_basis": sort_basis,
-        "applied_text_template": _APPLIED[reason].format(person=person, menu=menu_name),
+        "applied_text_template": _APPLIED[reason_for_text].format(person=person, menu=menu_name),
     }
 
 
@@ -250,6 +278,48 @@ def counts(session_id: str) -> dict:
     )
     return {"remaining": int(row["remaining"]), "total": int(row["total"]),
             "answered": int(row["answered"])}
+
+
+def reconcile(session: dict) -> int:
+    """확인 필요 항목에 **열린 질문이 없는** 상태를 메운다 — 돌려주는 값은 새로 만든 질문 수 (보고 10번).
+
+    왜 필요한가: 질문 큐가 비면 화면은 "답할 것이 없다"로 보고 주문서로 넘어가게 하는데, 주문서는
+    확인 필요 항목이 남아 공유를 막는다 — "확인이 필요한 주문이 1건 있어요"가 거기서 처음 보인다.
+    큐가 0이 되는 것과 확인 필요가 0이 되는 것이 **같은 뜻이어야** 그 어긋남이 없다.
+
+    항목당 질문 수는 되묻기 상한(MAX_REASK)을 넘기지 않는다 — 답이 새 모호함을 낳을 때 끝없이 묻지 않게.
+    상한에 닿은 항목은 개별 바꾸기(행 편집)로 고친다.
+    """
+    from app import config
+
+    session_id = session["session_id"]
+    rows = db.fetch_all(
+        "SELECT i.*, m.name AS menu_name FROM app.order_item i "
+        "  LEFT JOIN app.menu m ON m.menu_id = i.menu_id "
+        " WHERE i.session_id = %s AND i.removed = false AND i.validation_status <> 'passed' "
+        " ORDER BY i.item_id", (session_id,))
+    if not rows:
+        return 0
+    asked = db.fetch_all(
+        "SELECT item_id, status, COUNT(*) AS n FROM app.review_question "
+        " WHERE session_id = %s GROUP BY item_id, status", (session_id,))
+    has_open = {r["item_id"] for r in asked if r["status"] == "open"}
+    times = {}
+    for r in asked:
+        times[r["item_id"]] = times.get(r["item_id"], 0) + int(r["n"])
+    missing = [r for r in rows if r["item_id"] not in has_open
+               and times.get(r["item_id"], 0) < config.MAX_REASK]
+    if not missing:
+        return 0
+    seq = int(db.fetch_one("SELECT COALESCE(MAX(seq), 0) AS n FROM app.review_question "
+                           " WHERE session_id = %s", (session_id,))["n"])
+    built = []
+    for row in missing:
+        seq += 1
+        built.append(build(dict(row), session_id=session_id, brand_id=session["brand_id"],
+                           menu_version=session["menu_version"], seq=seq))
+    insert(session_id, built)
+    return len(built)
 
 
 def projection(session_id: str) -> dict:

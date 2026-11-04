@@ -8,6 +8,9 @@
 [앞 메시지]
 {message_id} [{sender}] {text}
 
+[같은 사람이 한 다른 말]
+{message_id} [{sender}] {text}
+
 [이번에 해석할 메시지]
 {message_id} [{sender}] {text}
 

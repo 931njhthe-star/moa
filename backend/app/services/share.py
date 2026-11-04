@@ -9,6 +9,7 @@
 import datetime
 
 from app.services import share_image
+from app.services.chat_parse import UNNAMED
 
 FOOT = "Moa · 비공식 시연 서비스"
 NOTICE = "참고용 금액이에요. 실제 결제 금액과 다를 수 있어요"
@@ -37,8 +38,13 @@ def build_card(sheet: dict, *, now: datetime.datetime | None = None, show_names:
 
     show_names=False 면 묶음마다의 이름 줄을 뺀다 — 메뉴 · 수량 · 요청 · 합계만 남는다(2026-11-04 · 사용자 요청 #8).
     머리줄의 "N명"은 인원 수라 이름이 아니므로 남긴다.
+
+    이름이 없는 대화(참여자가 `이름 없음` 하나뿐)는 **요청 없이도** 이름 줄을 뺀다 —
+    "이름 없음 · 이름 없음"을 단톡방에 올리는 것은 이름 표시가 아니다(2026-11-05 사용자 결정 1번).
     """
     now = now or _now_kst()
+    if show_names and not _has_real_names(sheet):
+        show_names = False
     brand_head = BRAND_HEAD.get(sheet["brand"]["id"], "카페")
     summary = sheet["summary"]
     totals = sheet["totals"]
@@ -67,6 +73,12 @@ def build_card(sheet: dict, *, now: datetime.datetime | None = None, show_names:
         "notice": NOTICE,
         "foot": FOOT,
     }
+
+
+def _has_real_names(sheet: dict) -> bool:
+    """이름이라고 할 만한 주문자가 하나라도 있는가 — `이름 없음`은 이름이 아니다."""
+    return any(name and name != UNNAMED
+               for group in sheet.get("groups") or [] for name in group.get("people") or [])
 
 
 # 공유 카드 · 파일 이름의 "기준 시각"은 한국 시간이다. 컨테이너 시계는 UTC 라 그대로 쓰면 오전 11시 주문이
@@ -115,9 +127,10 @@ def view(sheet: dict, *, fmt: str = "text", now: datetime.datetime | None = None
     대체 문구를 함께 주고 화면이 [텍스트 복사]만 쓰게 한다.
     """
     card = build_card(sheet, now=now, show_names=show_names)
+    shown = show_names and _has_real_names(sheet)
     return {
         "format": fmt,
-        "show_names": show_names,
+        "show_names": shown,
         "content": render_text(card),
         "card": card,
         "image_filename": image_filename(sheet["brand"]["id"], now=now),

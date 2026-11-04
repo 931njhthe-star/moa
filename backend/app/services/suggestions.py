@@ -22,14 +22,82 @@ def analyze(session: dict, raw_text: str) -> dict:
     from app import graph
 
     parsed = chat_parse.parse(raw_text)
-    if not parsed["messages"]:
-        # 누가 보낸 답장인지 모르면 누구 주문을 바꿀지 정할 수 없다 — "찾지 못했어요"로 끝내지 않고 형식을 알려 준다
+    named = [m for m in parsed["messages"] if m["sender"] != chat_parse.UNNAMED]
+    if not parsed["messages"] or (not named and not _nameless_session(session)):
+        # 누가 보낸 답장인지 모르면 누구 주문을 바꿀지 정할 수 없다 — "찾지 못했어요"로 끝내지 않고 형식을 알려 준다.
+        # 이름 없는 대화로 시작한 세션은 예외다 — 거기서는 주문자가 처음부터 `이름 없음` 하나다(보고 1번)
         return {"found_text": NO_SENDER_TEXT, "ai_notice": "AI가 찾은 내용이에요", "suggestions": [],
                 "blocked_reason_text": None}
     return graph.run("reply", session, text=raw_text, messages=parsed["messages"])["result"]
 
 
 NO_SENDER_TEXT = "보낸 사람 이름이 있어야 찾을 수 있어요. [이름] 바꿀 내용 형식으로 붙여 주세요"
+
+
+def _nameless_session(session: dict) -> bool:
+    """이 세션의 주문자가 `이름 없음` 뿐인가 (보고 1번). DB 를 못 읽으면 거짓 — 이름을 요구하는 쪽이 안전하다."""
+    from app import db
+
+    try:
+        rows = db.fetch_all(
+            "SELECT DISTINCT person FROM app.order_item "
+            " WHERE session_id = %s AND removed = false", (session["session_id"],))
+    except Exception:      # noqa: BLE001 — DB 가 없으면 판정하지 않는다
+        return False
+    return bool(rows) and all(r["person"] == chat_parse.UNNAMED for r in rows)
+
+
+def analyze_and_apply(session: dict, raw_text: str) -> dict:
+    """API-031 (apply=true) — 답장을 분석하고 **분명한 변경은 바로 반영**, 불분명한 것은 확인 질문으로 올린다.
+
+    2026-11-05 사용자 보고 11번: 담당자는 답장을 붙여넣은 뒤 주문 정리 화면으로 돌아가 "반영된 결과"와
+    "더 확인할 것"만 보면 된다. 제안마다 [반영] · [무시]를 누르게 하지 않는다.
+
+    낙관적 잠금은 쓰지 않는다(expected_version=None) — 제안 여러 건을 잇따라 반영하므로 버전이 매번 오른다.
+    화면이 들고 있던 버전으로 검사하면 둘째 건부터 409 가 된다. 되돌리기는 제안마다 그대로 남는다.
+    """
+    out = analyze(session, raw_text)
+    applied, skipped = [], 0
+    for suggestion in out.get("suggestions") or []:
+        if not suggestion.get("actionable"):
+            continue
+        try:
+            result = decide(session, suggestion["suggestion_id"], "apply", expected_version=None)
+            # 무엇이 어떻게 바뀌었는지 문장으로 남긴다 — 화면이 채팅에 그대로 건다(3차 보고 6번)
+            applied.append({"suggestion_id": suggestion["suggestion_id"],
+                            "text": f'{suggestion["person"]} 님 주문을 {suggestion["change_text"]}로 바꿨어요.',
+                            "undo_token": result.get("undo_token"),
+                            "item_id": suggestion.get("item_id")})
+        except (edits.NotApplicable, edits.Conflict):
+            skipped += 1                      # 반영할 값이 없거나 대상이 사라졌다 — 질문으로 남는다
+    asked = promote_ambiguous(session)
+    if asked:
+        _mark_needs_review(session, [q["item_id"] for q in asked])
+    found = []
+    if applied:
+        found.append(f"바뀐 주문 {len(applied)}건을 반영했어요")
+    if asked:
+        found.append(f"확인할 것 {len(asked)}건이 생겼어요")
+    if not applied and not asked:
+        found.append("바뀐 주문을 찾지 못했어요")
+    return {**out, "applied_count": len(applied), "asked_count": len(asked),
+            "applied": applied, "skipped_count": skipped, "found_text": " · ".join(found),
+            "changed_item_ids": [a["item_id"] for a in applied if a.get("item_id")],
+            "blocked_reason_text": None}
+
+
+def _mark_needs_review(session: dict, item_ids: list[str]) -> None:
+    """확인 질문이 생긴 항목은 확인 필요여야 한다 — 그래야 화면이 질문을 묻고 공유가 막힌다 (보고 10 · 11번)."""
+    if not item_ids:
+        return
+    with db.transaction() as cur:
+        cur.execute(
+            "UPDATE app.order_item SET validation_status = 'needs_review', "
+            "       rule_verdict = 'undecided', review_reason = 'ambiguous_target', "
+            "       review_reason_text = COALESCE(review_reason_text, '어느 주문인지 확인해 주세요') "
+            " WHERE session_id = %s AND item_id = ANY(%s) AND removed = false",
+            (session["session_id"], item_ids))
+        edits._commit(cur, session, expected_version=None)
 
 
 def persist(session: dict, messages: list[dict], event_types: dict[int, str]) -> dict:
@@ -75,7 +143,8 @@ def persist(session: dict, messages: list[dict], event_types: dict[int, str]) ->
             suggestion = _build(message, message_id, by_person.get(message["sender"], []),
                                 session_id=session_id, brand_id=brand_id,
                                 menu_version=menu_version, seq=sg_base + len(built) + 1,
-                                event_type=event_types.get(offset - 1, "ignore"))
+                                event_type=_event_type(event_types.get(offset - 1, "ignore"),
+                                                       message["text"]))
             if suggestion is None:
                 continue
             built.append(suggestion)
@@ -102,6 +171,19 @@ def persist(session: dict, messages: list[dict], event_types: dict[int, str]) ->
         "blocked_reason_text": (f"반영할지 정하지 않은 제안이 {pending}건 있어요"
                                 if pending else None),
     }
+
+
+def _event_type(from_llm: str, text: str) -> str:
+    """답장 1건의 경로 — LLM 판정이 잡담(ignore · confirm)이어도 **바꿔 달라는 말은 변경으로 받는다**.
+
+    "저는 그냥 좀 바꿔주세요"가 ignore 로 분류되어 제안도 질문도 없이 사라졌다(2026-11-05 보고 11번 확인 중).
+    무엇으로 바꾸는지 불분명한 것은 _build 가 `ambiguous` 로 올리고 확인 질문이 된다 — 조용히 버리지 않는다.
+    """
+    if from_llm in ("ignore", "confirm"):
+        ruled = intake.classify(text)
+        if ruled in ("update", "cancel"):
+            return ruled
+    return from_llm
 
 
 def _build(message: dict, message_id: str, candidates: list[dict], *,
@@ -241,8 +323,9 @@ def promote_ambiguous(session: dict) -> list[dict]:
     """`ambiguous` 제안을 확인 질문으로 올린다 (D-07 4.8 → review_question)."""
     session_id = session["session_id"]
     rows = db.fetch_all(
-        "SELECT s.*, i.person, i.menu_text, i.menu_id FROM app.suggestion s "
+        "SELECT s.*, i.person, i.menu_text, i.menu_id, m.name AS menu_name FROM app.suggestion s "
         "  JOIN app.order_item i ON i.item_id = s.item_id "
+        "  LEFT JOIN app.menu m ON m.menu_id = i.menu_id "
         " WHERE s.session_id = %s AND s.kind = 'ambiguous' AND s.status = 'pending' "
         "   AND s.question_id IS NULL", (session_id,))
     base = questions.counts(session_id)["total"]
@@ -250,7 +333,7 @@ def promote_ambiguous(session: dict) -> list[dict]:
     for offset, row in enumerate(rows, start=1):
         question = questions.build(
             {**row, "item_id": row["item_id"], "review_reason": "ambiguous_target",
-             "traits": [], "candidates": []},
+             "traits": [], "candidates": [], "reply_quote": row["quote"]},
             session_id=session_id, brand_id=session["brand_id"],
             menu_version=session["menu_version"], seq=base + offset)
         built.append(question)

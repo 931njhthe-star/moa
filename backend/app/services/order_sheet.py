@@ -60,7 +60,10 @@ def can_share(session_id: str) -> dict:
         "         WHERE session_id = %s AND removed = false "
         "           AND validation_status <> 'passed')                       AS review_count, "
         "       (SELECT COUNT(*) FROM app.suggestion "
-        "         WHERE session_id = %s AND status = 'pending')              AS pending_count",
+        # 확인 질문으로 올린 제안(question_id 있음)은 질문 큐가 맡는다 — 여기서 또 세면 질문을 다 답해도
+        # "반영할지 정하지 않은 제안이 N건 있어요"가 남아 주문서가 영영 막힌다(2026-11-05 3차 보고 7번)
+        "         WHERE session_id = %s AND status = 'pending' "
+        "           AND question_id IS NULL)                                 AS pending_count",
         (session_id, session_id),
     )
     review_count = int(counts["review_count"])

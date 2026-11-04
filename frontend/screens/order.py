@@ -183,10 +183,31 @@ def _share_button() -> None:
         dialogs.share_dialog(share, _mark_shared)
 
 
+# --- 6 단톡방 답장 반영하기 (케이스 20 · 2026-11-05 보고 11번) ----------------
+# 공유한 뒤 단톡방에 온 "나 라떼로 바꿔줘"를 받는 자리다. 붙여넣으면 서버가 분명한 변경은 반영하고
+# 불분명한 것은 확인 질문으로 올린다 — 그 결과를 보려면 주문 정리 화면으로 돌아가야 한다.
+def _after_reply(data: dict) -> None:
+    found = data.get("found_text") or ""
+    st.session_state[state.NOTICE] = copy.S2_REPLY_APPLIED.format(found=found)
+    # 바뀐 주문마다 한 줄 — 주문 정리 화면의 채팅에 그대로 남는다(3차 보고 6번)
+    st.session_state[state.REPLY_APPLIED] = data.get("applied") or []
+    st.session_state[state.CHAT] = []          # 주문 정리 화면이 서버 문구로 다시 채운다
+    st.session_state["_answered"] = 0
+    nav.go("review")
+
+
+if not shared:
+    with st.container(key="moa_reply_open"):
+        if st.button(copy.S5_REPLY_OPEN_BUTTON, key="reply_open", icon=":material/forum:"):
+            dialogs.reply_dialog(_after_reply)
+
+
 # --- 8 하단 바 — [‹ 주문 정리로] + (막는 이유) + [공유하기] ------------------
 back, _ = layout.bottom_bar(back_label=copy.S5_BACK, back_key="s5_back", primary_label=copy.S5_SHARE,
                             primary_key="share_open", primary_enabled=can_share,
-                            blocked_reason=blocked_reason, primary_slot=_share_button)
+                            blocked_reason=blocked_reason, primary_slot=_share_button,
+                            # 막는 이유(확인 필요 · 정하지 않은 답장)는 주문 정리 화면에서 푼다(3차 보고 7번)
+                            blocked_action=(lambda: nav.go("review")) if blocked_reason else None)
 if back:
     nav.go("review")
 

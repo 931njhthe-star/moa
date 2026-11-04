@@ -20,6 +20,8 @@ BRAND_OTHER_OPEN = "brand_other_open"
 CHAT = "chat"                         # 채팅 말풍선 목록
 PROGRESS_OPEN = "progress_open"       # 진행 말풍선 펼침 여부 (끝나면 접힌 상태가 기본)
 RAW_OPEN = "raw_open"                 # 넣은 대화 원본 보기 펼침 여부
+PANEL_RAW_OPEN = "panel_raw_open"     # 주문서 패널 하단 "전체 대화" 펼침 여부 (2026-11-05 보고 9번)
+REPLY_APPLIED = "reply_applied"       # 답장으로 반영된 변경 문장 목록 (3차 보고 6번) — 주문 정리 채팅에 남긴다
 EDIT_ROW = "edit_row"                 # 행 편집 중인 item_id
 UNDO_TOKEN = "undo_token"
 NOTICE = "notice"                     # 서버가 준 user_message (화면에 그대로)
@@ -48,6 +50,8 @@ _DEFAULTS = {
     CHAT: [],
     PROGRESS_OPEN: False,
     RAW_OPEN: False,
+    PANEL_RAW_OPEN: False,
+    REPLY_APPLIED: [],
     EDIT_ROW: None,
     UNDO_TOKEN: None,
     NOTICE: None,

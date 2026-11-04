@@ -122,6 +122,14 @@ if has_result:
         # 채팅 말풍선 문구는 서버가 만든다
         for item in session.get("chat", []):
             state.add_chat(item.get("role", "assistant"), item.get("text", ""), kind=item.get("kind"))
+        # 주문서에서 답장을 반영하고 돌아온 경우 — 무엇이 일어났는지 알린다(1차 보고 11번 · 3차 보고 6번).
+        # 요약 한 줄 + **바뀐 주문마다 한 줄**. 문구는 서버가 만든 것을 그대로 쓴다
+        if st.session_state.get(state.NOTICE):
+            state.add_chat("assistant", st.session_state[state.NOTICE])
+            st.session_state[state.NOTICE] = None
+        for applied in st.session_state.get(state.REPLY_APPLIED) or []:
+            state.add_chat("assistant", applied.get("text", ""))
+        st.session_state[state.REPLY_APPLIED] = []
 
 brand = st.session_state.get(state.BRAND)
 
@@ -215,12 +223,40 @@ with st.container(key="moa_work", horizontal=True):
         if has_result:
             with st.container(key="moa_panel_head"):
                 c.order_panel_head(session.get("summary", {}))
+            # 확인 필요 행은 패널에 두지 않는다 — 원문 문장이 메뉴 자리에 보이고, 같은 것을 채팅이 또 묻는다
+            # (2026-11-05 사용자 보고 9번). 확인은 채팅 질문 하나로만 하고, 패널은 정리된 주문만 보여준다
+            settled = c.by_person([r for r in session.get("rows", []) if not r.get("needs_review")])
+            asking = len(session.get("rows", [])) - len(settled)
             with st.container(key="moa_panel_rows"):
-                for row in session.get("rows", []):
+                for row in settled:
                     opened = st.session_state.get(state.EDIT_ROW) == row["item_id"]
                     c.order_row(row, on_open=_open_row, opened=opened,
                                 editor=lambda row=row: _row_editor(row))
-            st.html(f'<div class="moa-panel-foot">{c.esc(session.get("ai_notice"))}</div>')
+                if asking:
+                    st.html('<div class="moa-panel-asking">'
+                            f'{c.esc(copy.S2_PANEL_ASKING.format(n=asking))}</div>')
+                if not settled and not asking:
+                    st.html(f'<div class="moa-panel-asking">{c.esc(copy.S2_PANEL_EMPTY)}</div>')
+                elif not settled:
+                    st.html(f'<div class="moa-panel-asking">{c.esc(copy.S2_PANEL_NONE_YET)}</div>')
+            # 하단 — 넣은 대화 전체. 패널에서 뺀 문장도 여기서 그대로 볼 수 있다(보고 9번)
+            panel_raw = st.session_state[state.PANEL_RAW_OPEN]
+            with st.container(key="moa_panel_foot"):
+                st.html(f'<div class="moa-panel-foot-text">{c.esc(session.get("ai_notice"))}</div>')
+                if st.button(copy.S2_PANEL_RAW_CLOSE if panel_raw else copy.S2_PANEL_RAW_OPEN,
+                             key="link_panel_raw",
+                             icon=":material/expand_less:" if panel_raw else ":material/expand_more:",
+                             icon_position="right"):
+                    st.session_state[state.PANEL_RAW_OPEN] = not panel_raw
+                    st.rerun()
+                if panel_raw:
+                    whole = api.get(
+                        lambda: api_client.get_evidence(state.session_id(), session_token=state.token()),
+                        fallback=mock.EVIDENCE, label="evidence")
+                    st.html('<div class="moa-raw-list moa-panel-raw">' + "".join(
+                        f'<div class="moa-raw-row"><span class="moa-raw-name">{c.esc(m.get("sender"))}</span>'
+                        f'<span class="moa-raw-text">{c.esc(m.get("text"))}</span></div>'
+                        for m in whole.get("messages", [])) + "</div>")
         else:
             with st.container(key="moa_panel_skel"):
                 c.panel_skeleton()
@@ -357,6 +393,22 @@ with st.container(key="moa_work", horizontal=True):
                     qid = question["question_id"]
                     st.session_state["_open_question"] = question
 
+                    def _retry_on_stale(call, **kwargs):
+                        """409 STALE_VERSION 이면 세션을 다시 읽어 **한 번만** 다시 보낸다 (D-02 2.5).
+
+                        예전에는 409 를 토스트로만 알리고 끝나서, 담당자 눈에는 "버튼을 눌러도 아무 일도
+                        일어나지 않는" 것으로 보였다(2026-11-05 3차 보고 5번 — 사이즈 버튼 3개 다 반영 안 됨).
+                        """
+                        data = api.act(lambda: call(version=st.session_state.get(state.VERSION)), **kwargs)
+                        if data.get("code") != "STALE_VERSION":
+                            return data
+                        fresh = api.act(lambda: api_client.get_session(state.session_id(),
+                                                                       session_token=state.token()),
+                                        label="session_refresh")
+                        if fresh.get("version") is not None:
+                            st.session_state[state.VERSION] = fresh["version"]
+                        return api.act(lambda: call(version=st.session_state.get(state.VERSION)), **kwargs)
+
                     def _answer(value, label=None, question=question):
                         """API-021 — 빠른 답. **누른 버튼의 라벨**이 내 말풍선으로 남는다.
 
@@ -366,12 +418,13 @@ with st.container(key="moa_work", horizontal=True):
                         (옵션 목록은 라벨로 들고 있다 — 2026-11-03 확인).
                         """
                         shown = label or value
-                        data = api.act(
-                            lambda: api_client.answer_question(
+                        data = _retry_on_stale(
+                            lambda version: api_client.answer_question(
                                 state.session_id(), question["question_id"], value,
-                                session_token=state.token(),
-                                version=st.session_state.get(state.VERSION)),
+                                session_token=state.token(), version=version),
                             fallback=mock.answer_result(question, value), label="answer")
+                        if data.get("version") is not None:
+                            st.session_state[state.VERSION] = data["version"]
                         if data.get("_error"):
                             st.toast(data["user_message"])  # 질문을 답한 것으로 남기지 않는다
                             st.rerun()
@@ -448,13 +501,20 @@ with st.container(key="moa_work", horizontal=True):
             st.rerun()
 
 # --- 9 하단 바 — [‹ 대화 넣기로] + [주문서 보기] -----------------------------
-# 남은 건수는 확인 질문 큐가 정본이다 — 답할수록 줄어야 상태 줄과 어긋나지 않는다
-remaining = st.session_state.get("_remaining", review_count)
+# 남은 건수는 **질문 큐와 확인 필요 건수 중 큰 값**이다 (2026-11-05 사용자 보고 10번).
+# 질문 큐만 보면, 물을 질문이 없는데 확인 필요 항목이 남은 상태에서 주문서로 넘어가고
+# 거기서 처음 "확인이 필요한 주문이 1건 있어요"를 만난다 — 주문서에서는 그것을 풀 수단이 없다.
+# 서버도 같은 구멍을 질문 보충(questions.reconcile)으로 막는다 — 둘은 같은 방향의 이중 방어다
+remaining = max(int(st.session_state.get("_remaining") or 0), int(review_count or 0))
+# 반영할지 정하지 않은 답장 제안도 막는다 — 주문서에서야 만나면 거기서는 풀 수단이 없다(3차 보고 7번)
+pending_suggestions = int(progress.get("pending_suggestions") or 0)
 blocked = None
 if not has_result:
     blocked = copy.S2_BUSY_HINT
 elif remaining:
     blocked = copy.S2_REMAINING_HINT.format(n=remaining)
+elif pending_suggestions:
+    blocked = copy.S2_PENDING_SUGGESTION_HINT.format(n=pending_suggestions)
 
 back, go_order = layout.bottom_bar(
     back_label=copy.S2_BACK, back_key="s2_back",

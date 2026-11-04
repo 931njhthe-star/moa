@@ -32,6 +32,8 @@ def _required_text(body: dict, field: str) -> str:
 
 @router.get("/sessions/{session_id}/questions")
 def get_questions(session: dict = Depends(deps.session_of)):
+    # 확인 필요 항목에 열린 질문이 없으면 먼저 메운다 — 큐 0 과 확인 필요 0 이 같은 뜻이어야 한다(보고 10번)
+    questions.reconcile(session)
     return envelope.ok(questions.projection(session["session_id"]))
 
 

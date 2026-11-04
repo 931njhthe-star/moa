@@ -239,10 +239,14 @@ def get_order_sheet(session_id, *, session_token=None, client=None):
     return request("GET", f"/api/sessions/{session_id}/order-sheet", client=client, session_token=session_token)
 
 
-def analyze_replies(session_id, raw_text, *, session_token=None, client=None):
-    """API-031 — 답장 대화 분석 → 변경 제안."""
+def analyze_replies(session_id, raw_text, *, apply=False, session_token=None, client=None):
+    """API-031 — 답장 대화 분석 → 변경 제안.
+
+    `apply=True` 면 분명한 변경은 서버가 바로 반영하고 불분명한 것은 확인 질문으로 올린다
+    (2026-11-05 보고 11번 — 담당자가 제안마다 [반영]을 누르지 않는다).
+    """
     return request("POST", f"/api/sessions/{session_id}/replies/analyze", client=client,
-                   session_token=session_token, json={"raw_text": raw_text})
+                   session_token=session_token, json={"raw_text": raw_text, "apply": bool(apply)})
 
 
 def decide_suggestion(session_id, suggestion_id, decision, *, session_token=None, version=None, client=None):

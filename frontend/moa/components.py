@@ -149,11 +149,37 @@ def row_html(row: dict) -> str:
     menu_cls = "moa-row-menu moa-row-menu-amb" if unknown else "moa-row-menu"
     changed = '<span class="moa-row-changed"></span>' if row.get("changed") else ""
     swatch = icons.swatch(row.get("menu_text"), 36, unknown=unknown)
+    # 한 사람이 여러 잔을 시켰으면 몇 번째 잔인지 붙인다 — 같은 이름이 연달아 나와 헷갈렸다
+    # (2026-11-05 3차 보고 3번). 화면이 세지 않는다 — 넘겨받은 값을 쓴다
+    seq = row.get("person_seq")
+    seq_html = f'<span class="moa-row-seq">{esc(seq)}</span>' if seq else ""
     return (f'{changed}<div class="moa-row">{swatch}<div class="moa-row-body">'
-            f'<div class="moa-row-top"><span class="moa-row-person">{esc(row.get("person"))}</span>{right}</div>'
+            f'<div class="moa-row-top"><span class="moa-row-person">{esc(row.get("person"))}'
+            f'{seq_html}</span>{right}</div>'
             f'<div class="{menu_cls}">{esc(row.get("menu_text"))}</div>'
             f'<div>{option_chips(row.get("options"))}</div>'
             f'{custom_request_box(row.get("custom_request"))}</div></div>')
+
+
+def by_person(rows: list[dict]) -> list[dict]:
+    """같은 사람의 잔을 붙여 놓고 순번을 단다 (2026-11-05 3차 보고 3번).
+
+    사람 순서는 **처음 나온 순서**를 지킨다 — 이름순으로 다시 세우면 대화 순서와 어긋나 찾기 어렵다.
+    한 잔뿐인 사람에게는 순번을 달지 않는다.
+    """
+    order, grouped = [], {}
+    for row in rows or []:
+        person = row.get("person") or ""
+        if person not in grouped:
+            order.append(person)
+            grouped[person] = []
+        grouped[person].append(row)
+    out = []
+    for person in order:
+        mine = grouped[person]
+        for index, row in enumerate(mine, start=1):
+            out.append({**row, "person_seq": f"{index}/{len(mine)}" if len(mine) > 1 else None})
+    return out
 
 
 def order_row(row: dict, *, on_open, opened: bool, editor) -> None:

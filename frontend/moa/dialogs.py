@@ -259,6 +259,35 @@ def menu_dialog(on_pick, *, key: str = "menu") -> None:
                         st.rerun()
 
 
+# --- 단톡방 답장 반영하기 (SCR-005 케이스 20 · 2026-11-05 보고 11번) ------------
+@st.dialog(copy.S5_REPLY_TITLE)
+def reply_dialog(on_analyzed) -> None:
+    """답장 대화를 붙여넣는 모달. [바뀐 주문 찾기]를 누르면 서버가 분석 · 반영까지 한다.
+
+    이 화면은 답장을 해석하지 않는다 — 문장을 그대로 보내고, 결과 문구도 서버가 준 것을 쓴다.
+    반영이 끝나면 호출자가 주문 정리 화면으로 보낸다(그 화면이 바뀐 주문과 남은 확인을 보여준다).
+    """
+    with st.container(key="dlg_reply"):
+        st.html(f'<div class="moa-dlg-sub">{_esc(copy.S5_REPLY_SUB)}</div>')
+        # 입력과 버튼을 **폼으로 묶는다** — 붙여넣고 바로 눌러도 값과 클릭이 같은 재실행에 함께 온다.
+        # 폼이 아니면 첫 클릭은 입력창 blur 로만 쓰여, 담당자는 두 번 눌러야 했다(2026-11-05 3차 보고 1번)
+        with st.form("reply_form", border=False, clear_on_submit=False):
+            text = st.text_area(copy.S5_REPLY_PLACEHOLDER, placeholder=copy.S5_REPLY_PLACEHOLDER,
+                                label_visibility="collapsed", height=180, key="reply_raw")
+            submitted = st.form_submit_button(copy.S5_REPLY_ANALYZE, type="primary")
+        if submitted:
+            if not (text or "").strip():
+                st.toast(copy.S5_REPLY_EMPTY)
+                return
+            data = api.act(
+                lambda: api_client.analyze_replies(state.session_id(), text, apply=True,
+                                                   session_token=state.token()),
+                fallback={"found_text": "바뀐 주문을 찾지 못했어요", "applied_count": 0,
+                          "asked_count": 0}, label="reply_analyze")
+            on_analyzed(data)
+            st.rerun()
+
+
 # --- 주문서 공유하기 (SCR-005 케이스 21) --------------------------------------
 @st.dialog(copy.S5_SHARE_TITLE)
 def share_dialog(share: dict, on_shared) -> None:

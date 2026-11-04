@@ -1,2 +1,6 @@
-streamlit
-httpx
+# 화면 의존성 — 버전 고정.
+# streamlit 은 1.60 이상이 필요하다: 화면 코드가 `width="content"` 를 쓴다(1.48 에는 없다).
+# **backend 와 같은 .venv 를 쓰지 않는다** — streamlit 1.66 은 starlette>=0.46 을, fastapi 0.115.6 은
+# starlette<0.42 를 요구해 한 환경에 함께 설치되지 않는다. 화면은 .venv-frontend 를 쓴다(README).
+streamlit==1.66.1
+httpx==0.28.1

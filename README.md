@@ -126,6 +126,53 @@ cd frontend
 
 프론트엔드는 기본으로 `http://localhost:8000`에 접속합니다. 다른 주소를 쓰려면 `BACKEND_URL` 환경변수를 지정합니다.
 
+### 방법 3: EC2 서버 (ECR 이미지)
+
+서버는 빌드하지 않고 ECR 에서 이미지를 받는다. 같은 `docker-compose.yml` 을 쓰고, 이미지 주소만 `.env` 의 `REGISTRY` 로 바꾼다.
+
+**이미지 올리기** (내 PC, PowerShell) — `docker compose build` 후 `moa-backend:latest` · `moa-frontend:latest` 를 ECR 에 push 한다.
+
+```powershell
+$AWS_REGION = "ap-northeast-2"
+$AWS_ACCOUNT_ID = "<계정 ID>"
+$ECR = "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR
+
+foreach ($REPO in "moa-backend", "moa-frontend") {
+    aws ecr describe-repositories --repository-names $REPO --region $AWS_REGION *> $null
+    if ($LASTEXITCODE -ne 0) {
+        aws ecr create-repository --repository-name $REPO --region $AWS_REGION
+    }
+    docker tag "${REPO}:latest" "$ECR/${REPO}:latest"
+    docker push "$ECR/${REPO}:latest"
+}
+```
+
+**서버에 둘 파일** (`~/moa`) — 소스 코드는 두지 않는다.
+
+```
+~/moa/
+├── docker-compose.yml
+├── .env            # POSTGRES_PASSWORD=...  REGISTRY=<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com/  (끝의 / 포함)
+└── backend/.env    # backend/.env.example 을 채운 것
+```
+
+**서버에서 실행** — EC2 에 ECR 읽기 IAM 역할이 붙어 있어야 한다(액세스 키를 두지 않는다).
+
+```bash
+cd ~/moa
+aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin <계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+docker compose pull
+docker compose up -d db                                   # 처음 한 번: DB 먼저
+docker compose run --rm backend python sql/run_sql.py     # 처음 한 번: 롤 · 스키마 · 시드
+docker compose up -d --no-build
+```
+
+- DB 를 초기화하기 전에 전체를 띄우면 백엔드가 `app_rw` 로 접속하지 못해 `unhealthy` 가 되고 프론트엔드가 뜨지 않는다. 그때는 초기화 후 `docker compose restart backend interpreter-primary interpreter-backup`
+- 다시 배포할 때는 `docker compose pull && docker compose up -d --no-build` 만 한다
+- 이미지는 x86(amd64) 로 빌드된다. Arm(Graviton) 인스턴스에서는 뜨지 않는다
+
 ## 테스트
 
 위의 직접 실행 1~2단계(가상환경, 패키지 설치)를 마친 뒤 각 폴더에서 실행합니다. CI도 같은 `pytest` 명령을 사용합니다.

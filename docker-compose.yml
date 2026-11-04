@@ -9,6 +9,12 @@
 #   POSTGRES_PASSWORD=...      (compose 가 ${...} 치환에 읽는 파일 · gitignore 대상)
 # 처음 한 번 스키마 · 시드를 넣는다 (14 데모 시드 제외):
 #   docker compose run --rm backend python sql/run_sql.py
+#
+# 이미지 이름 — 로컬은 빌드, 서버(EC2)는 ECR 에서 받는다. 같은 파일을 쓴다:
+#   로컬  REGISTRY 없음 → moa-backend:latest · moa-frontend:latest 로 빌드
+#   서버  .env 에 REGISTRY=<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/ (끝의 / 포함)
+#         docker compose pull && docker compose up -d --no-build   (서버에서는 빌드하지 않는다)
+# backend · interpreter-primary · interpreter-backup 은 같은 이미지(moa-backend)를 쓴다
 services:
   db:
     image: postgres:16
@@ -30,6 +36,7 @@ services:
 
   backend:
     build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
     # 밖으로 열지 않는다 — 화면이 컨테이너 네트워크 안에서 http://backend:8000 으로 부른다(D-03 2.1 · 7.2)
     expose:
       - "8000"
@@ -56,6 +63,7 @@ services:
   # 주문 해석 서비스 2계통 (D-02 DEP-001 · D-03 2.2) — 백엔드와 같은 이미지, 역할만 다르다. 밖으로 열지 않는다
   interpreter-primary:
     build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
     command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8101"]
     env_file:
       - path: ./backend/.env
@@ -73,6 +81,7 @@ services:
 
   interpreter-backup:
     build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
     command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8102"]
     env_file:
       - path: ./backend/.env
@@ -88,6 +97,7 @@ services:
 
   frontend:
     build: ./frontend
+    image: ${REGISTRY:-}moa-frontend:${TAG:-latest}
     ports:
       - "8501:8501"        # 밖으로 여는 유일한 포트 (D-03 7.2)
     environment:

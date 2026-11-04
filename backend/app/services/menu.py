@@ -98,6 +98,8 @@ _EXPLAINED = sorted({
     "큰", "작은", "중간", "보통", "제일", "미디엄", "스몰", "숏", "사이즈", "얼음", "적게", "많이", "조금", "추가",
     "하나", "한잔", "잔", "한", "개", "컵", "거", "것", "걸로", "걸", "그걸로", "같은", "나도", "저도",
     "나는", "난", "저는", "전", "그럼", "그냥", "주세요", "부탁", "할게", "할래", "마실게", "먹을게",
+    # 주문 어미 — 메뉴 표현에 붙어 와도 메뉴판에 없는 수식어가 아니다 (2026-11-05 보고 4번)
+    "먹을래", "마실래", "먹겠", "마시겠", "시킬게", "시킬래", "주문", "원해", "싶어",
     "요", "도", "만", "은", "는", "이", "가", "을", "를", "로", "으로", "나", "저", "에서",
 }, key=len, reverse=True)
 
@@ -171,6 +173,44 @@ def match(brand_id: str, menu_version: str, menu_text: str, *, strict: bool = Fa
     return {"menu_id": None, "candidates": [], "reason": "unregistered_menu"}
 
 
+def by_name(brand_id: str, menu_version: str, name: str) -> dict | None:
+    """메뉴 **이름**으로 하나를 찾는다. 별칭은 보지 않는다 (2026-11-05 2차 보고 2번).
+
+    왜 필요한가: 확인 질문의 버튼 라벨은 메뉴 **이름**이다. 그런데 이름이 다른 메뉴의 별칭이기도 한 경우가 있다
+    — 시드에서 "아이스 카라멜 마키아또"가 별칭 `카라멜마키아또`를 함께 가진다. 그래서 담당자가 버튼
+    [카라멜 마키아또]를 눌러도 `match()` 는 후보 2개로 보고 확정하지 못했고, 화면에는 "그 내용은 반영하지
+    못했어요"가 떴다. **이름은 메뉴판에서 유일하므로** 이름 일치를 별칭보다 먼저 본다.
+    """
+    cat = catalog(brand_id, menu_version)
+    key = normalize(name)
+    hit = next((m for m in cat["menus"] if normalize(m["name"]) == key), None)
+    return _hit(cat, hit["menu_id"]) if hit else None
+
+
+def mentions(brand_id: str, menu_version: str, text: str) -> list[str]:
+    """이 문장이 가리키는 **서로 다른 메뉴** 목록 (2026-11-05 2차 보고 3번).
+
+    겹치지 않게 **긴 별칭부터** 집는다 — "아아 톨 하나랑 카페라떼 하나"는 두 개, "아이스 유스베리 티
+    어떠세요"는 하나다. 참조 주문("그걸로")을 자동 확정해도 되는지 가리는 데 쓴다.
+    """
+    cat = catalog(brand_id, menu_version)
+    key = normalize(text)
+    found: list[str] = []
+    taken: list[tuple[int, int]] = []
+    for alias in sorted((k for k in cat["alias_index"] if k), key=len, reverse=True):
+        start = key.find(alias)
+        while start >= 0:
+            end = start + len(alias)
+            if not any(s < end and start < e for s, e in taken):
+                taken.append((start, end))
+                for menu_id in cat["alias_index"][alias]:
+                    if menu_id not in found:
+                        found.append(menu_id)
+                break
+            start = key.find(alias, start + 1)
+    return found
+
+
 def with_temperature(brand_id: str, menu_version: str, hit: dict, hint: str | None) -> dict:
     """온도 단서로 같은 메뉴의 아이스 · 따뜻한 판을 고른다. 메뉴 이름이 온도를 품는다("카페 라떼" / "아이스 카페 라떼").
 
@@ -190,6 +230,30 @@ def with_temperature(brand_id: str, menu_version: str, hit: dict, hint: str | No
     key = normalize(target)
     other = next((m for m in cat["menus"] if normalize(m["name"]) == key), None)
     return _hit(cat, other["menu_id"]) if other else hit
+
+
+def narrow_by_temperature(hit: dict, hint: str | None) -> dict:
+    """후보가 아이스 판 · 따뜻한 판으로만 갈린 경우, 온도 단서로 하나를 고른다 (2026-11-05 보고 6번).
+
+    "카라멜 마키아또 아이스로 주세요"는 같은 별칭에 두 메뉴가 걸려 후보 2개가 됐고,
+    `with_temperature` 는 **이미 정해진** 메뉴만 바꾸므로 아무 일도 하지 않았다. 그 사이에 끼운다.
+    고르는 조건은 좁다 — 온도로 갈라 남는 후보가 **정확히 하나**일 때만. 아니면 그대로 물어본다.
+    """
+    if not hint or hit.get("menu_id"):
+        return hit
+    if hit.get("reason") != "ambiguous_spec":
+        # 미등록(메뉴판에 없는 수식어가 붙었다)은 온도로 좁히지 않는다 — "헤이즐넛 카라멜 마키아또 아이스"가
+        # 조용히 아이스 카라멜 마키아또로 확정된다. 그것이 SC-8 "오답 확정 0건"이 막는 자리다
+        return hit
+    candidates = hit.get("candidates") or []
+    if len(candidates) < 2:
+        return hit
+    iced = [c for c in candidates if (c.get("name") or "").startswith("아이스")]
+    hot = [c for c in candidates if not (c.get("name") or "").startswith("아이스")]
+    picked = iced if hint == "ice" else hot
+    if len(picked) != 1 or not (iced and hot):
+        return hit
+    return {**picked[0], "candidates": [], "reason": None}
 
 
 def temperature_variants(brand_id: str, menu_version: str, base_text: str) -> list[dict]:

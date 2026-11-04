@@ -2,6 +2,11 @@
 
 읽지 못한 줄을 **버리지 않고 돌려준다**. 조용히 빠뜨리면 담당자가
 "내가 넣은 사람이 왜 없지"를 알 수 없다.
+
+이름이 **한 줄도** 없는 대화는 거부하지 않고 `이름 없음` 한 사람의 주문으로 받는다
+(2026-11-05 사용자 결정 1번). 줄 단위로 사람을 가를 근거가 없으므로 사람별 구분은 하지 않는다 —
+메뉴 · 수량 · 옵션만 정리하고, 공유는 이름 없이 한다. 이름이 **일부라도** 있으면 예전처럼
+이름 없는 줄을 읽지 못한 줄로 둔다 — 그때는 형식이 섞인 것이지 이름이 없는 대화가 아니다.
 """
 
 import re
@@ -44,6 +49,11 @@ def judge_file(filename: str, data: bytes) -> tuple[str | None, str | None]:
     return text, None
 
 
+# 이름을 알 수 없는 참여자 — 이름이 한 줄도 없는 대화에서 주문자 칸에 들어간다(사용자 결정 1번).
+# 화면 · 공유 · 질문이 모두 이 값을 보고 "이름 없는 주문"으로 다룬다
+UNNAMED = "이름 없음"
+
+
 def parse(raw_text: str) -> dict:
     """`[이름] 메시지` 형식만 본다 (API-011 미리보기와 API-012 가 같은 파서를 쓴다)."""
     messages, unreadable = [], []
@@ -66,10 +76,21 @@ def parse(raw_text: str) -> dict:
             "text": text,
         })
 
+    if not messages and unreadable:
+        # 이름이 한 줄도 없다 — 거부하지 않고 `이름 없음` 한 사람의 대화로 받는다
+        messages = [{"message_id": f"m{n}", "order": n, "seq": n,
+                     "sender": UNNAMED, "text": line["text"]}
+                    for n, line in enumerate(unreadable, start=1)]
+        unreadable = []
+
     people = sorted({m["sender"] for m in messages})
+    # 이름 없는 대화는 "1명"이 아니다 — 몇 명인지 모른다는 사실을 그대로 알린다
+    summary = (f"이름이 없는 대화예요 · 메시지 {len(messages)}개를 읽었어요"
+               if people == [UNNAMED] else
+               f"{len(people)}명 · 메시지 {len(messages)}개를 읽었어요")
     return {
         "messages": messages[: config.MAX_MESSAGES],
-        "summary_text": f"{len(people)}명 · 메시지 {len(messages)}개를 읽었어요",
+        "summary_text": summary,
         "unreadable_lines": unreadable,
         "can_proceed": bool(messages),
         "people": people,

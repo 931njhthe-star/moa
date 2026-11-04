@@ -174,23 +174,24 @@ with st.container(key="moa_s1"):
             label_visibility="collapsed", help=None)
         submit_slot = st.container(width="content")
 
-if raw_text != st.session_state.get(state.RAW_TEXT):
-    st.session_state[state.RAW_TEXT] = raw_text
-    st.session_state[state.SAMPLE_RAW] = ""
-    st.session_state[state.NOTICE] = None
-    if raw_text.strip():
-        _refresh_preview(raw_text)
-    else:
-        st.session_state[state.PREVIEW] = None
-    st.rerun()
-
-# 넣은 대화 — 입력창의 글 또는 예시 대화 원문
-pending_raw = st.session_state.get(state.RAW_TEXT) or st.session_state.get(state.SAMPLE_RAW) or ""
+# 넣은 대화 — **입력창의 지금 값**이 먼저다 (2026-11-05 3차 보고 1번).
+#
+# 예전에는 입력이 바뀌면 여기서 바로 `st.rerun()` 을 걸어 미리보기를 새로 그렸다. 그런데 [정리하기]를
+# 누르면 입력창이 blur 되어 **값 변경과 버튼 클릭이 같은 재실행에 함께 도착한다** — 그때 여기서 재실행을
+# 걸면 버튼 처리 코드에 닿기도 전에 run 이 끊겨, 첫 클릭은 "값만 들어가고" 아무 일도 일어나지 않았다.
+# 그래서 입력 반영은 **버튼 처리 뒤로** 미루고(파일 끝), 여기서는 값만 읽는다.
+changed_text = raw_text != st.session_state.get(state.RAW_TEXT)
+pending_raw = raw_text or st.session_state.get(state.SAMPLE_RAW) or ""
 has_conversation = bool(pending_raw.strip())
 
 
 def _submit() -> None:
     """API-012 — 분석 요청. 매장 기준 판별은 서버가 규칙으로 한다(LLM 전)."""
+    if not pending_raw.strip():
+        # 빈 채로 눌렀다 — 서버를 부르지 않고 무엇을 해야 하는지 알린다(3차 보고 1번)
+        st.session_state[state.NOTICE] = copy.S1_SUBMIT_DISABLED_REASON
+        st.rerun()
+        return
     source = "sample" if st.session_state.get(state.PREVIEW_IS_SAMPLE) else "paste"
     try:
         data = api.get(lambda: api_client.create_session(pending_raw, source=source),
@@ -214,13 +215,29 @@ def _submit() -> None:
 
 
 with submit_slot:
-    # 화면의 유일한 주 버튼. 넣은 대화가 없으면 비활성이다 (U-1 · 원칙 2 예외).
-    # 비활성 이유는 **버튼 툴팁**으로만 둔다 — 정본 시안 케이스 01에는 이유 문구 줄이 없다.
+    # 화면의 유일한 주 버튼 (U-1). **붙여넣자마자 누를 수 있다** (2026-11-05 3차 보고 1번).
+    #
+    # 왜 비활성으로 두지 않는가: Streamlit 의 입력창은 **바깥을 누르거나 Ctrl+Enter 를 해야** 값이 서버로
+    # 간다. 넣은 대화가 있어야 활성으로 두면, 붙여넣은 직후에는 버튼이 회색이라 "먹통"으로 보인다
+    # (활성화까지 담당자가 한 번 더 클릭해야 했다 — 실측: 바깥을 누른 뒤에는 244ms).
+    # 버튼을 누르면 입력창이 먼저 blur 되어 **같은 재실행에서 값이 함께 도착한다** — 그 값으로 분석한다.
+    # 그래도 비어 있으면 서버를 부르지 않고 안내만 한다(아래 `_submit`).
     if st.button(copy.S1_SUBMIT, key="submit_analyze", type="primary",
-                 disabled=not has_conversation or bool(st.session_state.get(state.BRAND_QUESTION)),
+                 disabled=bool(st.session_state.get(state.BRAND_QUESTION)),
                  help=None if has_conversation else copy.S1_SUBMIT_DISABLED_REASON):
         with st.spinner(""):     # 문구 없이 돌아가는 표시만 (중복 클릭 방지는 그대로)
             _submit()
+
+# --- 입력 반영 — 버튼을 처리한 뒤에 한다(위 주석) -----------------------------
+if changed_text:
+    st.session_state[state.RAW_TEXT] = raw_text
+    st.session_state[state.SAMPLE_RAW] = ""
+    st.session_state[state.NOTICE] = None
+    if raw_text.strip():
+        _refresh_preview(raw_text)
+    else:
+        st.session_state[state.PREVIEW] = None
+    st.rerun()
 
 if uploaded is not None and st.session_state.get("_last_file") != uploaded.file_id:
     st.session_state["_last_file"] = uploaded.file_id

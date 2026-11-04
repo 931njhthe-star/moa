@@ -234,9 +234,12 @@ def match_item(item: dict, *, brand_id: str, menu_version: str) -> dict:
 
       1 엄격 매칭 — 포함 규칙에 설명되지 않는 글자가 남으면 확정하지 않는다(미등록 메뉴 차단 · SC-8)
       2 온도 단서 — 얼음 옵션 · 뒤에 붙은 "아이스" 로 같은 메뉴의 아이스 판을 고른다(PRD 8.1 #1)
+      3 온도로 후보 좁히기 — 후보가 아이스 판 · 따뜻한 판 둘뿐이면 단서로 하나를 고른다(보고 6번)
     """
     matched = menu_service.match(brand_id, menu_version, item.get("match_text") or item["menu_text"],
                                  strict=True)
+    # 3 후보가 아이스 판 · 따뜻한 판으로만 갈렸으면 온도 단서로 하나를 고른다 (2026-11-05 보고 6번)
+    matched = menu_service.narrow_by_temperature(matched, item.get("temperature_hint"))
     return menu_service.with_temperature(brand_id, menu_version, matched,
                                          item.get("temperature_hint"))
 

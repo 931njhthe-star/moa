@@ -8,6 +8,7 @@
 
 from app import db
 from app.services import brand as brand_service
+from app.services.chat_parse import UNNAMED as _UNNAMED_PERSON
 from app.services import menu as menu_service
 from app.services import settlement
 
@@ -170,6 +171,14 @@ def _input_summary(session_id: str) -> dict:
     return {"message_count": count, "label_text": f"넣은 대화 {count}개"}
 
 
+def pending_suggestions(session_id: str) -> int:
+    """아직 결정하지 않은 답장 제안 수 — 질문으로 올린 것은 빼고 센다(공유 게이트와 같은 기준)."""
+    row = db.fetch_one(
+        "SELECT COUNT(*) AS n FROM app.suggestion "
+        " WHERE session_id = %s AND status = 'pending' AND question_id IS NULL", (session_id,))
+    return int(row["n"]) if row else 0
+
+
 def progress_view(session: dict, *, review_count: int, step_notes: dict | None = None) -> dict:
     """API-014 — 진행 4단계. 끝난 단계는 복구 중에도 done 을 유지한다."""
     status = session["status"]
@@ -205,6 +214,9 @@ def progress_view(session: dict, *, review_count: int, step_notes: dict | None =
         "collapsed_text": collapsed,
         "review_count": review_count if status in ("needs_review", "awaiting_confirmation")
         else None,
+        # 아직 정하지 않은 답장 제안 — 화면이 [주문서 보기]를 막는 근거다(2026-11-05 3차 보고 7번).
+        # 주문서에서야 "반영할지 정하지 않은 제안이 N건 있어요"를 만나면 거기서는 풀 수단이 없다
+        "pending_suggestions": pending_suggestions(session["session_id"]),
         "trace_id": session.get("trace_id"),
     }
 
@@ -253,13 +265,16 @@ def chat_intro(session: dict, rows: list[dict], *, review_count: int) -> list[di
     화면이 "5명 · 5잔으로 정리했어요"를 조립하면 숫자를 세는 규칙이 화면에 생긴다.
     """
     summary = settlement.totals(rows)
+    # 이름 없는 대화는 몇 명인지 모른다 — "1명"으로 말하지 않는다 (2026-11-05 보고 1번)
+    nameless = bool(rows) and all(r.get("person") == _UNNAMED_PERSON for r in rows)
+    head = f'{summary["cups"]}잔' if nameless else f'{summary["people"]}명 · {summary["cups"]}잔'
     messages: list[dict] = []
     if session["status"] in ("needs_review", "awaiting_confirmation", "completed"):
         tail = ("왼쪽 주문서에서 확인하고 고칠 수 있어요" if not review_count
                 else f"{review_count}건만 답해 주시면 돼요")
         messages.append({
             "role": "assistant", "kind": "summary",
-            "text": f'{summary["people"]}명 · {summary["cups"]}잔으로 정리했어요. {tail}',
+            "text": f'{head}으로 정리했어요. {tail}',
         })
     return messages
 

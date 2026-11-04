@@ -49,6 +49,9 @@ def _revalidate(cur, session: dict, item_id: str) -> dict:
     row = cur.fetchone()
     if not row:
         raise NotApplicable(item_id)
+    if row.get("removed"):
+        # 빠진 항목은 판정 대상이 아니다 — 금액도 다시 재지 않는다("주문 아니에요"로 뺀 항목)
+        return dict(row)
 
     verdict = validation.validate_item(
         {**row, "reference": False, "traits": [],
@@ -120,6 +123,7 @@ def answer_question(session: dict, question_id: str, answer: str, *,
                     " WHERE question_id = %s", (answer, question_id))
 
         after = _revalidate(cur, session, question["item_id"])
+        _close_suggestion(cur, session_id, question_id, answer)
         _follow_up(cur, session, after)
         token = changes.record(cur, session_id, method="question_answer",
                                item_id=question["item_id"], who=before["person"],
@@ -136,6 +140,17 @@ def answer_question(session: dict, question_id: str, answer: str, *,
         "version": version,
         "remaining": stats["remaining"],
     }
+
+
+def _close_suggestion(cur, session_id: str, question_id: str, answer: str) -> None:
+    """답장 제안에서 올라온 질문을 답하면 그 제안도 결정된 것이다 (2026-11-05 3차 보고 7번).
+
+    닫지 않으면 `pending` 으로 남아 공유 게이트가 계속 막는다 — 담당자에게는 풀 방법이 보이지 않는다.
+    """
+    cur.execute("UPDATE app.suggestion SET status = %s, decided_at = NOW() "
+                " WHERE session_id = %s AND question_id = %s AND status = 'pending'",
+                ("ignored" if answer == questions.TARGET_KEEP else "applied",
+                 session_id, question_id))
 
 
 def answer_from_text(session: dict, question_id: str, text: str, *,
@@ -215,6 +230,9 @@ def _text_answer(session: dict, question: dict, text: str) -> str:
         if _TARGET_APPLY_WORDS.search(said) and questions.TARGET_APPLY in values:
             return questions.TARGET_APPLY
 
+    if questions.NO_ORDER in values and re.search(r"주문\s*아니|아니에요|아닙니다|빼\s*주|뺄게|취소", said):
+        return questions.NO_ORDER
+
     # 버튼 라벨을 그대로 친 경우 — 긴 라벨부터("아이스 카페 라떼"가 "카페 라떼"보다 먼저)
     said_key = normalize(said)
     for option in sorted(options, key=lambda o: -len(normalize(o.get("label") or ""))):
@@ -224,8 +242,10 @@ def _text_answer(session: dict, question: dict, text: str) -> str:
     if key in ("size", "quantity"):
         raise NotApplicable(text)
 
-    # 메뉴 이름 — 채팅 수정과 같은 매칭(엄격 아님 · 되돌리기가 있다). 온도 단서로 아이스 · 따뜻한 판을 고른다
-    hit = menu_service.match(brand_id, menu_version, intake._menu_text(said) or said)
+    # 메뉴 이름 — 채팅 수정과 같은 매칭(엄격 아님 · 되돌리기가 있다). 온도 단서로 아이스 · 따뜻한 판을 고른다.
+    # 이름을 그대로 친 경우가 가장 흔하므로 이름 일치를 먼저 본다(별칭 충돌 회피 · 보고 2번)
+    said_menu = intake._menu_text(said) or said
+    hit = menu_service.by_name(brand_id, menu_version, said_menu)         or menu_service.match(brand_id, menu_version, said_menu)
     hit = menu_service.with_temperature(brand_id, menu_version, hit, intake.temperature_hint(said))
     if hit.get("menu_id"):
         return hit["name"]
@@ -244,6 +264,13 @@ def _apply_answer(cur, session, question, answer: str, extra_options: dict | Non
             raise NotApplicable(answer)
         cur.execute("UPDATE app.order_item SET person = %s, person_check = NULL, updated_at = NOW() "
                     " WHERE session_id = %s AND item_id = %s", (answer, session["session_id"], item_id))
+        return
+
+    if answer == questions.NO_ORDER:
+        # [주문 아니에요, 뺄게요] — 메뉴를 알아듣지 못한 항목을 뺀다(보고 2번). 지우지 않고 removed 로 둔다
+        cur.execute("UPDATE app.order_item SET removed = true, updated_at = NOW() "
+                    " WHERE session_id = %s AND item_id = %s", (session["session_id"], item_id))
+        questions.void_for_item(session["session_id"], item_id, cur=cur)
         return
 
     if question["reason"] == "ambiguous_target" and answer in (questions.TARGET_APPLY, questions.TARGET_KEEP):
@@ -292,9 +319,10 @@ def _apply_answer(cur, session, question, answer: str, extra_options: dict | Non
         save(quantity=quantity, ambiguous_options=ambiguous)
         return
 
-    # 메뉴를 고른 경우(온도 확인 포함) — 이름으로 매칭한다.
-    # 메뉴 이름이 온도를 품으므로 메뉴를 고르면 온도도 정해진다
-    matched = menu_service.match(brand_id, menu_version, answer)
+    # 메뉴를 고른 경우(온도 확인 포함) — **이름을 먼저** 본다(2026-11-05 2차 보고 2번).
+    # 버튼 라벨은 메뉴 이름인데, 그 이름이 다른 메뉴의 별칭이기도 하면 match() 가 후보 2개로 보고 거부한다
+    # ("카라멜 마키아또" → 카라멜 마키아또 · 아이스 카라멜 마키아또). 메뉴 이름이 온도를 품으므로 온도도 정해진다
+    matched = menu_service.by_name(brand_id, menu_version, answer)         or menu_service.match(brand_id, menu_version, answer)
     if not matched.get("menu_id"):
         raise NotApplicable(answer)
     ambiguous.pop("temperature", None)
@@ -327,6 +355,8 @@ def _follow_up(cur, session: dict, row: dict) -> None:
     첫 답 뒤 **물을 질문이 없어 확인 필요로 영원히 남는다** — 공유가 막힌다.
     """
     # 사양이 남았거나 주문자 확인이 남았으면 묻는다 — 주문자 확인은 사유 우선순위 맨 뒤라 앞 답 뒤에야 차례가 온다
+    if row.get("removed"):
+        return
     if row.get("validation_status") != "needs_review" or not (
             questions.spec_key(row.get("ambiguous_options")) or row.get("review_reason") == "ambiguous_person"):
         return
@@ -382,6 +412,8 @@ def _applied_text(question: dict, answer: str, person: str) -> str:
         return f"{person} 님 주문에 반영했어요."
     if answer == questions.TARGET_KEEP:
         return f"{person} 님 주문을 그대로 뒀어요."
+    if answer == questions.NO_ORDER:
+        return f"{person} 님 주문을 뺐어요."
     label = next((option.get("label") for option in (question.get("options") or [])
                   if str(option.get("value")) == str(answer)), None) or answer
     return f"{person} 님 주문을 {label}{_ro(label)} 했어요."

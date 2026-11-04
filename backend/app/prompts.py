@@ -13,7 +13,7 @@ import pathlib
 
 from app import config
 
-PROMPT_VERSION = "v1.2"                      # D-11 6절의 버전과 같아야 한다 (v1.2 — menu.md 규칙 7 · 8 요청 나누기)
+PROMPT_VERSION = "v1.3"                      # D-11 6절의 버전과 같아야 한다 (v1.3 — 인원별 정리 · 잡담 제외 · 사양만 말한 변경)
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent.parent / "prompts"
 
 # DEP-001 task → 작업 프롬프트 파일 (D-11 0절 표)
@@ -84,11 +84,14 @@ def render_context(context: dict, messages: list[dict]) -> str:
       menu_as_of      없으면 config.MENU_AS_OF
       existing_items  [이미 정리된 주문] — {message_id, person, menu_text, quantity, options}
       prev_messages   [앞 메시지] — 해석하지 않는 선행 문맥
+      person_messages [같은 사람이 한 다른 말] — 이번 묶음 발화자의 대화 전체 발언(해석하지 않는다)
     messages          [이번에 해석할 메시지]
     """
     rows = {
         "[이미 정리된 주문]": [_order_row(i) for i in context.get("existing_items") or []],
         "[앞 메시지]": [_message_row(m) for m in context.get("prev_messages") or []],
+        # 같은 사람이 대화 전체에서 한 다른 말 — 어느 문장이 주문인지 가리는 근거다(2026-11-05 보고 7번)
+        "[같은 사람이 한 다른 말]": [_message_row(m) for m in context.get("person_messages") or []],
         "[이번에 해석할 메시지]": [_message_row(m) for m in messages],
     }
     values = {"brand_label": BRAND_LABELS.get(context.get("brand_id"), BRAND_LABELS["generic"]),

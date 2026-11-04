@@ -25,8 +25,14 @@ def get_order_sheet(session: dict = Depends(deps.session_of)):
 
 @router.post("/sessions/{session_id}/replies/analyze")
 async def analyze_replies(request: Request, session: dict = Depends(deps.session_of)):
-    raw_text = _required_text(await _body(request), "raw_text")
-    data = deps.write(lambda: suggestions.analyze(session, raw_text),
+    """apply=true 면 분명한 변경을 바로 반영하고 불분명한 것은 확인 질문으로 올린다 (2026-11-05 보고 11번).
+
+    기본값(apply 없음)은 예전 그대로 — 제안만 만들고 주문을 고치지 않는다(FR-007 · Q-01 검사 대상).
+    """
+    body = await _body(request)
+    raw_text = _required_text(body, "raw_text")
+    run = (suggestions.analyze_and_apply if body.get("apply") else suggestions.analyze)
+    data = deps.write(lambda: run(session, raw_text),
                       key=request.headers.get("Idempotency-Key"),
                       endpoint="replies-analyze", session_id=session["session_id"])
     return envelope.ok(data)

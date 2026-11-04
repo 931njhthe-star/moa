@@ -10,8 +10,8 @@ from langgraph.types import Send
 
 from app import config, db, ids, interpreter_client, logging_setup
 from app.graph import agents
-from app.services import (changes, edits, intake, menu as menu_service, sessions, settlement,
-                          suggestions, validation)
+from app.services import (changes, chat_parse, consolidate, edits, intake, menu as menu_service,
+                          sessions, settlement, suggestions, validation)
 from app.tools import pii
 
 ROUTES = ("add", "update", "cancel", "confirm", "ignore")
@@ -99,14 +99,29 @@ def batch_node(state: dict) -> dict:
     ctx = config.BATCH_CONTEXT
     batches = []
     for no, start in enumerate(range(0, len(messages), size), start=1):
-        batches.append({"batch_no": no, "prev": messages[max(0, start - ctx):start],
-                        "targets": messages[start:start + size], "use_llm": True,
-                        "service": service})
+        targets = messages[start:start + size]
+        prev = messages[max(0, start - ctx):start]
+        batches.append({"batch_no": no, "prev": prev, "targets": targets, "use_llm": True,
+                        "service": service, "person_prev": _person_context(messages, targets, prev)})
     # 분석 1회 LLM 호출 상한 — 묶음마다 최악 (1 + 재생성 2)회. 넘는 묶음은 처음부터 규칙
     allowed = config.MAX_LLM_CALLS_PER_RUN // (1 + config.MAX_REGENERATE)
     for batch in batches[allowed:]:
         batch["use_llm"] = False
     return {"batches": batches, "service": service}
+
+
+def _person_context(messages: list[dict], targets: list[dict], prev: list[dict]) -> list[dict]:
+    """이 묶음에 말한 사람들이 **대화 전체에서** 한 다른 말 (2026-11-05 사용자 보고 7번).
+
+    메시지 하나만 보고 판정하면 "네네 스타벅스입니다~"가 주문이 되고 한 사람이 말한 횟수만큼 잔이 늘었다.
+    그 사람의 다른 말이 함께 있으면 어느 문장이 주문인지 가릴 수 있다.
+    대화 전체를 묶음마다 넣지 않는 이유: 메시지 상한이 500건이라 프롬프트가 묶음 수만큼 커진다.
+    **그 묶음의 발화자 것만** 골라 상한을 둔다.
+    """
+    people = {m.get("sender") for m in targets if m.get("sender")}
+    shown = {m["message_id"] for m in targets} | {m["message_id"] for m in prev}
+    picked = [m for m in messages if m.get("sender") in people and m["message_id"] not in shown]
+    return [dict(m) for m in picked[:config.PERSON_CONTEXT]]
 
 
 def _saved_events(session: dict) -> list[dict] | None:
@@ -171,6 +186,7 @@ def intake_node(state: dict) -> dict:
         return {"events": []}
     context = {"brand_id": session["brand_id"], "menu_version": session["menu_version"],
                "menu_as_of": config.MENU_AS_OF, "prev_messages": batch["prev"],
+               "person_messages": batch.get("person_prev") or [],
                "existing_items": state.get("existing") or []}
     wire = [{"message_id": m["message_id"], "order": m.get("seq"), "sender": m["sender"],
              "text": m["text"]} for m in targets]
@@ -201,10 +217,22 @@ def intake_node(state: dict) -> dict:
                     if e.get("target_message_id") and e["target_message_id"] not in known:
                         e["target_message_id"] = None
             missing = target_ids - {e["message_id"] for e in events}
-            if missing:                                   # 누락 = 계약 위반과 같게 다룬다(D-12 3.1)
-                attempts += 1
-                reason = "missing_events"
-                continue
+            if missing:
+                # 누락된 메시지만 **규칙 해석으로 채운다** — 묶음 전체를 재생성하지 않는다(2026-11-05 3차 보고 2번).
+                #   왜 바꿨나: 모델은 주문이 아닌 말(인사 · 맞장구)의 이벤트를 아예 내지 않는 일이 잦다.
+                #   그때마다 재생성 2회를 쓰고 결국 **묶음 전체가 규칙으로** 떨어졌다 — 호출 3회가 7회로 늘고
+                #   (실측 2026-11-05: 11메시지 3묶음에 7회 · 9.9초) 잘 읽은 메시지의 해석까지 버려졌다.
+                #   규칙으로 채운 이벤트도 N-04 인원별 정리를 똑같이 지난다
+                filled = intake.extract_events([m for m in targets if m["message_id"] in missing],
+                                               brand_id=session["brand_id"],
+                                               menu_version=session["menu_version"])
+                logging_setup.log("schema_invalid", level="warning", session_id=session["session_id"],
+                                  trace_id=state.get("trace_id"), agent="intake",
+                                  detail="missing_events_filled", message_ids=sorted(missing))
+                return {"events": _ordered(intake.from_contract(events, targets, known_ids=known) + filled),
+                        "llm_calls": calls,
+                        "degraded": [{"batch_no": batch["batch_no"], "reason": "missing_events",
+                                      "messages": len(missing)}]}
             return {"events": _ordered(intake.from_contract(events, targets, known_ids=known)),
                     "llm_calls": calls}
         except interpreter_client.InterpreterError as exc:
@@ -260,6 +288,13 @@ def route_node(state: dict) -> dict:
         if event["event_type"] not in ROUTES:               # 계약이 이미 막는다 — 도달 불가
             event["event_type"] = "ignore"
         event["route"] = event["event_type"]
+    if state.get("source") == "snapshot":
+        # 인원별 정리 — 대화 전체가 함께 있는 유일한 지점이다(N-03 은 묶음 4건만 본다).
+        # LLM 해석 · 규칙 해석 양쪽에 똑같이 걸린다 (2026-11-05 사용자 보고 2 · 7 · 8번).
+        # 재개(resumed)로 저장본을 다시 읽어 온 경우에도 거는다 — 저장본은 N-03 결과이므로 정리 전이다
+        session = state["session"]
+        consolidate.consolidate(events, brand_id=session["brand_id"],
+                                menu_version=session["menu_version"])
     if state.get("source") == "snapshot" and not state.get("resumed"):
         _link_persons(events, state.get("messages") or [])
         session_id = state["session"]["session_id"]
@@ -284,6 +319,8 @@ def _link_persons(events: list[dict], messages: list[dict]) -> None:
     """
     senders = {m["message_id"]: m.get("sender") for m in messages}
     participants = list(dict.fromkeys(m["sender"] for m in messages if m.get("sender")))
+    if participants == [chat_parse.UNNAMED]:
+        return                      # 이름 없는 대화 — 이을 참여자 이름이 없다(보고 1번)
     for event in events:
         if event.get("route") != "add":
             continue
@@ -386,16 +423,77 @@ def _window(events: list[dict], index: int) -> list[dict]:
             for e in picked]
 
 
+_SENTENCE = re.compile(r"[.!?\n]")
+
+
+def _menu_sentence(item: dict, event: dict, session: dict) -> dict | None:
+    """한 메시지에 취향 표현과 메뉴 이름이 함께 있으면 **메뉴 이름이 있는 문장**으로 다시 맞춘다.
+
+    "전 오늘 좀 피곤해서 달달한 거 먹을래요. 카라멜 마키아또 아이스로 주세요"가 취향 질문이 되고
+    말한 메뉴가 사라졌다(2026-11-05 사용자 보고 6번). 문장을 하나씩 맞춰 보고 **정확히 한 문장만**
+    메뉴로 확정되면 그 결과를 쓴다. 두 문장이 각각 메뉴면 주문이 둘이라는 뜻이므로 손대지 않는다.
+    """
+    raw = (event.get("_raw_text") or "").strip()
+    sentences = [s.strip() for s in _SENTENCE.split(raw) if s.strip()]
+    if len(sentences) < 2:
+        return None
+    found = []
+    for sentence in sentences:
+        for draft in intake.build_items(sentence, item.get("person") or event.get("person") or ""):
+            hit = sessions.match_item(draft, brand_id=session["brand_id"],
+                                      menu_version=session["menu_version"])
+            if hit.get("menu_id"):
+                found.append((draft, hit))
+    if len(found) != 1:
+        return None
+    draft, hit = found[0]
+    return {**item, "match_text": draft["match_text"], "traits": [],
+            "options": {**(item.get("options") or {}), **(draft.get("options") or {})},
+            "ambiguous_options": {k: v for k, v in (item.get("ambiguous_options") or {}).items()
+                                  if k not in (draft.get("options") or {})},
+            "temperature_hint": draft.get("temperature_hint"),
+            "custom_request": item.get("custom_request") or draft.get("custom_request")}
+
+
+def _solid_reference(candidate: dict, events: list[dict], session: dict) -> bool:
+    """가리킨 주문이 **그 자체로 확정되는** 주문인가 — 참조 자동 확정의 조건이다 (보고 3번).
+
+    "아아 톨 하나랑 카페라떼 하나 주세요"처럼 한 문장에 메뉴가 둘이면 거짓이다. 그때 자동으로 고르면
+    "저도 같은 걸로요"가 둘 중 하나로 조용히 정해진다 — 묻는 쪽이 맞다.
+    """
+    source_id = candidate.get("source_message_id")
+    source = next((e for e in events if e["message_id"] == source_id), None) if source_id else None
+    if source is None:
+        return False
+    text = source.get("_raw_text") or ""
+    # 그 메시지가 가리키는 메뉴가 **하나뿐일 때만** 자동 확정한다 (2026-11-05 2차 보고 3번).
+    # 엄격 매칭으로 보던 것을 바꿨다 — "그러면 아이스 유스베리 티 어떠세요"처럼 권유 어미가 붙으면
+    # 엄격 매칭은 확정하지 못해, 후보가 하나뿐인데도 담당자에게 물었다
+    found = menu_service.mentions(session["brand_id"], session["menu_version"], text)
+    return len(found) == 1 and found[0] == candidate["menu_id"]
+
+
 def match_one(item: dict, event: dict, events: list[dict], index: int, session: dict) -> dict:
     """항목 하나를 메뉴판과 맞춘다 — N-05 와 N-06(메뉴가 바뀐 update)이 같은 함수를 쓴다."""
     brand_id, menu_version = session["brand_id"], session["menu_version"]
     matched = sessions.match_item(item, brand_id=brand_id, menu_version=menu_version)
+    if not matched.get("menu_id"):
+        rescued = _menu_sentence(item, event, session)
+        if rescued is not None:
+            item = rescued
+            matched = sessions.match_item(item, brand_id=brand_id, menu_version=menu_version)
     candidates = matched.get("candidates", [])
     match_reason = matched.get("reason")
     if not matched.get("menu_id") and item.get("reference"):
         referenced = sessions._referenced_menus(events, index, brand_id=brand_id,
                                                 menu_version=menu_version)
-        if referenced:
+        if len(referenced) == 1 and _solid_reference(referenced[0], events, session):
+            # 후보가 하나면 묻지 않는다 — "저도 라떼요"에 앞 주문이 카페 라떼 하나뿐이면 그것이 답이다
+            # (2026-11-05 사용자 보고 3 · 5번). 후보가 둘 이상이거나 가리킨 주문이 그 자체로
+            # 확정되지 않으면(한 문장에 메뉴가 둘) 그대로 묻는다
+            matched = {**matched, "menu_id": referenced[0]["menu_id"], "name": referenced[0]["name"]}
+            candidates, match_reason = [], "reference_menu_single"
+        elif referenced:
             candidates, match_reason = referenced, "reference_menu"
     row = {**item, "menu_id": matched.get("menu_id"), "menu_name": matched.get("name"),
            "candidates": candidates, "match_reason": match_reason,
@@ -424,9 +522,9 @@ def target_node(state: dict) -> dict:
     events = state["targets"]["ordered"]
     if source == "chat":
         actionable = next((e for e in events if e["route"] != "ignore"), None)
-        target = edits._find_target(session["session_id"], state["text"]) if actionable else None
-        return {"targets": {"ordered": events, "event_type": actionable["route"] if actionable else "ignore",
-                            "target": target}}
+        route = actionable["route"] if actionable else _chat_route(state["text"], events)
+        target = edits._find_target(session["session_id"], state["text"]) if route != "ignore" else None
+        return {"targets": {"ordered": events, "event_type": route, "target": target}}
     if source == "reply":
         by_seq = {}
         for e in events:
@@ -458,6 +556,22 @@ def target_node(state: dict) -> dict:
     for seq, row in enumerate(rows, start=1):
         row["item_id"] = ids.item_id(session["session_id"], seq)
     return {"rows": rows, "cancels": cancels, "targets": {"ordered": events}}
+
+
+def _chat_route(text: str, events: list[dict]) -> str:
+    """담당자가 친 문장을 LLM 이 잡담으로 봤을 때의 규칙 판정 (2026-11-05 2차 보고 7번).
+
+    system.md 규칙 4 는 **대화 속 지시**를 주문이 아닌 말로 다루라고 한다. 그런데 채팅 입력은
+    담당자 본인이 이 시스템에 하는 지시다 — "박서연 과장님은 제외"가 ignore 로 분류되어
+    "주문에서 바꿀 것을 찾지 못했어요"만 돌아왔다. 규칙이 변경 · 취소로 읽으면 그것을 따른다.
+    새 주문(add)으로는 올리지 않는다 — 채팅으로 주문을 새로 만드는 경로는 없다.
+    """
+    ruled = intake.classify(text)
+    if ruled in ("update", "cancel"):
+        for event in events:
+            event["route"] = event["event_type"] = ruled      # 출력 가드의 ignore 검사와 어긋나지 않게
+        return ruled
+    return "ignore"
 
 
 def _candidates(rows: list[dict], event: dict) -> list[dict]:
@@ -548,7 +662,10 @@ def _apply_update(rows: list[dict], event: dict, events: list[dict], index: int,
     for item in items:
         changed = match_one(item, event, events, index, session)
         options = item.get("options") or {}
-        if changed.get("menu_id") and changed["menu_id"] != target.get("menu_id"):
+        # 사양만 바꾸는 변경 — 문장 속 메뉴 이름은 대상을 가리키는 말이지 바꾸려는 값이 아니다
+        spec_only = (event.get("consolidated") in consolidate.SPEC_ONLY
+                     or consolidate.points_back(raw))
+        if not spec_only and changed.get("menu_id") and changed["menu_id"] != target.get("menu_id"):
             for key in ("menu_id", "menu_name", "candidates", "match_reason", "menu_text", "match_text"):
                 target[key] = changed.get(key)
         if options:
@@ -575,9 +692,13 @@ def validation_node(state: dict) -> dict:
         verdict = validation.validate_item(row, brand_id=session["brand_id"],
                                            menu_version=session["menu_version"])
         verdict = validation.apply_llm_review(verdict, None)
-        # 주문자 후보가 있으면(person_check) 후보 버튼이 있는 ambiguous_person 질문이 맡는다 — 여기서 덮지 않는다
+        # 주문자 후보가 있으면(person_check) 후보 버튼이 있는 ambiguous_person 질문이 맡는다 — 여기서 덮지 않는다.
+        # 이름 없는 대화는 묻지 않는다 — 주문자를 모른다는 것을 이미 알고 시작한 세션이고, 물어도 고를 이름이 없다
+        # (2026-11-05 보고 1번). 이름 없이 메뉴 · 수량 · 옵션만 정리하고 공유도 이름 없이 한다
+        nameless = row.get("person") == chat_parse.UNNAMED
         unclear = row.get("_target_unclear_text") or (
-            "누구 주문인지 확인해 주세요" if row.get("person_unclear") and not row.get("person_check") else None)
+            "누구 주문인지 확인해 주세요"
+            if row.get("person_unclear") and not row.get("person_check") and not nameless else None)
         if unclear:
             verdict = {**verdict, "rule_verdict": "undecided", "validation_status": "needs_review",
                        "review_reason": "ambiguous_target", "review_reason_text": unclear}

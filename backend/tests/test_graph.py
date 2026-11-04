@@ -136,10 +136,17 @@ def test_intake_regenerates_twice_then_falls_back_to_rules(interpreter):
     assert out["events"][0]["event_type"] == "add"                         # 규칙 해석으로 대체
 
 
-def test_missing_event_counts_as_invalid(interpreter):
-    interpreter.extend([_contract("m1"), _contract("m1"), _contract("m1", "m2")])
+def test_missing_event_is_filled_by_rules_without_regenerating(interpreter):
+    """누락된 메시지는 **그 메시지만** 규칙으로 채운다 — 묶음 전체를 다시 만들지 않는다 (2026-11-05 3차 보고 2번).
+
+    예전에는 누락을 계약 위반과 같게 보고 재생성 2회를 썼다(호출 3회). 모델이 주문 아닌 말의 이벤트를
+    자주 빠뜨려 분석이 느려지고, 잘 읽은 메시지의 해석까지 버려졌다.
+    """
+    interpreter.extend([_contract("m1")])
     out = nodes.intake_node(_batch(msgs(2)))
-    assert out["llm_calls"] == 3 and not out.get("degraded")
+    assert out["llm_calls"] == 1
+    assert out["degraded"][0]["reason"] == "missing_events"
+    assert {e["message_id"] for e in out["events"]} == {"m1", "m2"}
 
 
 def test_whole_line_message_id_is_restored(interpreter):

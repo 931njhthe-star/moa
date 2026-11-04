@@ -58,7 +58,8 @@ def test_context_never_carries_identifiers():
 
 def test_empty_sections_say_none():
     text = prompts.render_context({"brand_id": "generic"}, MSGS)
-    assert text.count("없음") == 2                                          # 이미 정리된 주문 · 앞 메시지
+    # 이미 정리된 주문 · 앞 메시지 · 같은 사람이 한 다른 말 (셋째는 2026-11-05 보고 7번에 추가)
+    assert text.count("없음") == 3
     assert "일반 카페 메뉴 기준" in text
 
 

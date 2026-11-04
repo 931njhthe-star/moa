@@ -79,6 +79,7 @@ MAX_LLM_CALLS_PER_RUN = 300   # 분석 1회 LLM 호출 상한 — 넘는 묶음�
 BATCH_SIZE = 4                # 묶음 메시지 수 — 1차 서비스 (D-12 3.1 · 7.1 실측)
 BATCH_SIZE_BACKUP = 2         # 대체 서비스(gpt-4o-mini)는 4건 묶음이 3.6 ~ 4.7초라 5초 제한에 걸린다 (D-12 10.2)
 BATCH_CONTEXT = 4             # 묶음마다 붙이는 앞 메시지 수
+PERSON_CONTEXT = 12           # 묶음마다 붙이는 "그 사람이 한 다른 말" 상한 (2026-11-05 보고 7번)
 BATCH_CONCURRENCY = 4         # 묶음 병렬 수 (429 회피)
 MENU_AGENT_MAX_ITEMS = 20      # 분석 1회에 Menu Agent 로 보내는 add 이벤트 상한 (비용 · 지연)
 REVIEW_AGENT_MAX_ITEMS = 10    # 분석 1회에 보조 검토로 보내는 항목 상한

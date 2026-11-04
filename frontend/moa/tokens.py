@@ -522,6 +522,17 @@ header[data-testid="stHeader"] { display: none; }
   flex: none; border-top: 1px solid var(--moa-line-soft); padding: 12px 22px;
   font: 400 12px/18px var(--moa-font); color: var(--moa-muted-3); background: var(--moa-surface);
 }
+/* 2026-11-05 보고 9번 — 패널 하단(AI 고지 + 전체 대화 펼치기) · 확인 중 안내 */
+.st-key-moa_panel_foot {
+  flex: none; border-top: 1px solid var(--moa-line-soft); padding: 10px 22px 12px;
+  background: var(--moa-surface); gap: 2px;
+}
+.moa-panel-foot-text { font: 400 12px/18px var(--moa-font); color: var(--moa-muted-3); }
+.moa-panel-asking {
+  margin: 6px 10px; padding: 10px 12px; border-radius: 10px; background: var(--moa-sunken);
+  font: 400 12.5px/19px var(--moa-font); color: var(--moa-muted-2);
+}
+.moa-panel-raw { max-height: 220px; overflow: auto; margin-top: 8px; }
 [class*="st-key-card_row"] { border-radius: 10px; padding: 14px 12px; gap: 0; }
 [class*="st-key-card_row"]:hover { background: var(--moa-sunken); }
 .st-key-moa_row_changed, [class*="st-key-card_row"]:has(.moa-row-changed) { background: var(--moa-changed) !important; }
@@ -529,6 +540,17 @@ header[data-testid="stHeader"] { display: none; }
 .moa-row-body { flex: 1 1 auto; min-width: 0; }
 .moa-row-top { display: flex; justify-content: space-between; align-items: center; }
 .moa-row-person { font: 600 12.5px/18px var(--moa-font); color: var(--moa-muted-2); }
+/* 한 사람이 여러 잔일 때의 순번 — 이름 옆 작은 회색 (2026-11-05 3차 보고 3번) */
+/* 막는 이유를 누를 수 있게 한 버튼 — 글자만 보이고 밑줄로 누를 수 있음을 알린다 (3차 보고 7번) */
+[class*="_blocked"] button { background: transparent !important; border: none !important; }
+[class*="_blocked"] button p {
+  font: 400 12.5px/18px var(--moa-font) !important; color: var(--moa-muted-2) !important;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.moa-row-seq {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--moa-sunken);
+  font: 600 11px/16px var(--moa-font); color: var(--moa-muted-3);
+}
 .moa-row-amount { font: 400 12.5px/18px var(--moa-font); color: var(--moa-muted-2); }
 .moa-row-menu { font: 700 15px/22px var(--moa-font); color: var(--moa-ink); margin: 4px 0 6px; }
 .moa-row-menu-amb { color: var(--moa-amber-text); }

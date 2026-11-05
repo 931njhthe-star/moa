@@ -28,8 +28,12 @@ FastAPI 에이전트 서버가 분석을 하고, Streamlit 화면이 입력 · �
 │   ├── requirements.txt
 │   ├── requirements-dev.txt
 │   └── Dockerfile
-├── docker-compose.yml       # 배포 구성 — 밖으로 여는 포트는 화면 8501 하나 (D-03 v1.2)
-├── docker-compose.dev.yml   # 로컬 개발용 덧씌우기 — 백엔드 8000 도 연다
+├── docker-compose.core.yml  # 공용 스택 — gateway(8501, 유일한 공개 포트) · db · 해석 서비스 2계통 · socket-proxy · healing
+├── docker-compose.app.yml   # 앱 스택 — frontend · backend. -p moa-a · -p moa-b 로 두 번 띄운다 (PRD 5.4)
+├── docker-compose.*.dev.yml # 로컬 개발용 덧씌우기 — 127.0.0.1 에만 포트를 연다
+├── gateway/haproxy.cfg      # 게이트웨이 — A/B 분산 · 쿠키 고정 · backend /health 로 제외 · 재등록
+├── socket-proxy/haproxy.cfg # Docker API 관문 — 조회 + 허용목록 컨테이너 재시작만
+├── scripts/                 # init-networks.sh(네트워크 3개) · deploy.sh(순차 배포)
 └── .github/workflows/ci.yml # CI: 테스트 + 이미지 빌드
 ```
 
@@ -65,18 +69,23 @@ MOA_UI_PREVIEW=1   # 켜기 — 서버 없이 화면만 볼 때. 화면 테스�
 
 ### 방법 1: Docker Compose (권장)
 
-Docker Desktop을 켠 뒤 프로젝트 루트에서 실행합니다. 백엔드는 `backend/.env`가 있으면 그 값을 씁니다(없으면 DB 없이 뜹니다).
+Docker Desktop을 켠 뒤 프로젝트 루트에서 실행합니다. 공용 스택 1벌 + 앱 스택 2벌(A · B)이고, 게이트웨이가 8501 하나로 A · B 에 나눠 보냅니다(PRD 5.4).
+루트 `.env` 에 `POSTGRES_PASSWORD` · `HEALING_RW_PASSWORD`, `backend/.env` 에 LLM 키 등 앱 비밀값을 둡니다(각각 `.env.example` · `backend/.env.example` 을 복사해 채운다).
 
 ```bash
-docker compose up --build                                                    # 배포 · 시연
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build    # 개발 (API 8000 도 연다)
+sh scripts/init-networks.sh                                                         # 처음 한 번: 네트워크 3개
+docker compose -f docker-compose.core.yml -p moa-core up -d --build                 # 공용 스택을 먼저
+docker compose -f docker-compose.app.yml  -p moa-a    run --rm backend python sql/run_sql.py   # 처음 한 번: 롤 · 스키마 · 시드
+docker compose -f docker-compose.app.yml  -p moa-a    up -d                         # 앱 복제본 A
+docker compose -f docker-compose.app.yml  -p moa-b    up -d                         # 앱 복제본 B
 ```
 
-- 화면: http://localhost:8501
-- API 문서: http://localhost:8000/docs — **개발용 덧씌우기를 썼을 때만** 열린다(배포는 백엔드 포트를 열지 않는다)
-- 주문 해석 서비스는 기본이 **LLM 해석**(`INTERPRETER_SOURCE=llm`)이다. 같은 입력에 같은 결과가 필요하면(장애 실험 반복) `INTERPRETER_SOURCE=rules docker compose up`
-
-백엔드 `/health`가 정상 응답한 뒤에 프론트엔드가 시작됩니다. 종료는 `Ctrl+C`, 정리는 `docker compose down`입니다.
+- 화면: http://localhost:8501 (게이트웨이)
+- 개발용으로 각 스택 · DB · 게이트웨이 상태 페이지를 직접 열려면 덧씌우기를 더한다 (127.0.0.1 에만 열린다)
+  - `docker compose -f docker-compose.core.yml -f docker-compose.core.dev.yml -p moa-core up -d` → DB `5433` · 상태 페이지 http://localhost:8404/stats
+  - `DEV_FRONT_PORT=8511 DEV_BACK_PORT=8001 docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml -p moa-a up -d` → A 화면 `8511` · API http://localhost:8001/docs (B 는 8512 · 8002)
+- 주문 해석 서비스는 기본이 **LLM 해석**(`INTERPRETER_SOURCE=llm`)이다. 같은 입력에 같은 결과가 필요하면(장애 실험 반복) 공용 스택을 `INTERPRETER_SOURCE=rules` 로 띄운다
+- 공용 스택을 먼저 띄운다 — compose 의 `depends_on` 은 프로젝트를 넘지 못한다. 정리는 앱 스택 · 공용 스택 순서로 `down` (**`-v` 금지** — DB 볼륨 `moa_pgdata` 가 지워진다)
 
 ### 방법 2: 직접 실행
 
@@ -128,9 +137,9 @@ cd frontend
 
 ### 방법 3: EC2 서버 (ECR 이미지)
 
-서버는 빌드하지 않고 ECR 에서 이미지를 받는다. 같은 `docker-compose.yml` 을 쓰고, 이미지 주소만 `.env` 의 `REGISTRY` 로 바꾼다.
+서버는 빌드하지 않고 ECR 에서 이미지를 받는다. 로컬과 같은 compose 파일을 쓰고, 이미지 주소만 `.env` 의 `REGISTRY` 로 바꾼다.
 
-**이미지 올리기** (내 PC, PowerShell) — `docker compose build` 후 `moa-backend:latest` · `moa-frontend:latest` 를 ECR 에 push 한다.
+**이미지 올리기** (내 PC, PowerShell) — `docker compose -f docker-compose.app.yml -p moa-a build` 후 `moa-backend:latest` · `moa-frontend:latest` 를 ECR 에 push 한다.
 
 ```powershell
 $AWS_REGION = "ap-northeast-2"
@@ -149,12 +158,14 @@ foreach ($REPO in "moa-backend", "moa-frontend") {
 }
 ```
 
-**서버에 둘 파일** (`~/moa`) — 소스 코드는 두지 않는다.
+**서버에 둘 파일** (`~/moa`) — 소스 코드는 두지 않는다. compose · 설정 · 스크립트는 CI 가 매 배포마다 복사한다.
 
 ```
 ~/moa/
-├── docker-compose.yml
-├── .env            # POSTGRES_PASSWORD=...  REGISTRY=<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com/  (끝의 / 포함)
+├── docker-compose.core.yml · docker-compose.app.yml
+├── gateway/haproxy.cfg · socket-proxy/haproxy.cfg
+├── scripts/init-networks.sh · scripts/deploy.sh
+├── .env            # POSTGRES_PASSWORD · HEALING_RW_PASSWORD · REGISTRY=<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ (끝의 / 포함)
 └── backend/.env    # backend/.env.example 을 채운 것
 ```
 
@@ -163,14 +174,14 @@ foreach ($REPO in "moa-backend", "moa-frontend") {
 ```bash
 cd ~/moa
 aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin <계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com
-docker compose pull
-docker compose up -d db                                   # 처음 한 번: DB 먼저
-docker compose run --rm backend python sql/run_sql.py     # 처음 한 번: 롤 · 스키마 · 시드
-docker compose up -d --no-build
+bash scripts/deploy.sh                                                        # 공용 → 해석 서비스 → 앱 A → (A UP 확인) → 앱 B
 ```
 
-- DB 를 초기화하기 전에 전체를 띄우면 백엔드가 `app_rw` 로 접속하지 못해 `unhealthy` 가 되고 프론트엔드가 뜨지 않는다. 그때는 초기화 후 `docker compose restart backend interpreter-primary interpreter-backup`
-- 다시 배포할 때는 `docker compose pull && docker compose up -d --no-build` 만 한다
+- 새 서버(빈 DB)라면 먼저 DB 만 띄우고 초기화한 뒤 `deploy.sh` 를 돌린다 — 초기화 전에는 backend 가 `unhealthy` 라 A 교체에서 멈춘다
+  `sh scripts/init-networks.sh && docker compose -f docker-compose.core.yml -p moa-core up -d db && docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py`
+
+- `deploy.sh` 는 두 앱 스택을 동시에 내리지 않는다. 교체할 스택을 게이트웨이에서 먼저 빼고, 교체 뒤 UP 이 확인돼야 다음 스택으로 간다. 배포 동안 healing 은 멈춘다
+- 옛 단일 스택(프로젝트 `moa`)이 떠 있으면 `deploy.sh` 가 처음 한 번 컨테이너만 지운다 — DB 볼륨 `moa_pgdata` 는 그대로 이어 쓴다
 - 이미지는 x86(amd64) 로 빌드된다. Arm(Graviton) 인스턴스에서는 뜨지 않는다
 
 ## 테스트
@@ -194,7 +205,7 @@ cd frontend
 
 1. `test-backend`, `test-frontend`: 각 폴더의 테스트 (동시에 실행). 백엔드는 일회용 PostgreSQL에 스키마를 올려 전체 흐름까지 돌린다
 2. `build`: 두 테스트가 통과하면 백엔드·프론트엔드 Docker 이미지를 빌드
-3. `deploy`: **`main` 에 push 될 때만** 실행된다(dev push · PR 은 2단계에서 끝난다). 이미지를 커밋 sha 태그 + `latest` 로 ECR 에 올리고, SSH 로 EC2 의 `~/moa` 에 `docker-compose.yml` 을 복사한 뒤 `docker compose pull && up -d --no-build` 한다. 마지막에 화면(8501) 응답을 확인한다
+3. `deploy`: **`main` 에 push 될 때만** 실행된다(dev push · PR 은 2단계에서 끝난다). 이미지를 커밋 sha 태그 + `latest` 로 ECR 에 올리고, SSH 로 EC2 의 `~/moa` 에 compose · 게이트웨이 · 소켓 프록시 설정 · 스크립트를 복사한 뒤 `scripts/deploy.sh` 로 순차 교체한다(A → 게이트웨이에서 A UP 확인 → B). 마지막에 게이트웨이(8501) 응답을 확인하고, 실패하면 컨테이너 상태 · 로그를 남긴다
 
 `deploy` 에 필요한 GitHub Secrets:
 

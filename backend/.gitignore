@@ -1,0 +1,8 @@
+data/raw/
+.env
+.AP-key.md
+__pycache__/
+.venv/
+*.pyc
+# 로그는 실행 중에 쌓인다 (logs/service.log · errors.log) — 커밋하지 않는다
+logs/

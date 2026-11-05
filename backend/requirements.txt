@@ -1,2 +1,20 @@
-fastapi
-uvicorn
+# 에이전트 서버 의존성 — D-03 1절 확정 스택
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+psycopg[binary]==3.2.3
+# 롤별 연결 풀 (app/db.py) — 원격 pooler 연결 1.8초를 요청마다 내지 않는다
+psycopg-pool==3.2.4
+python-dotenv==1.0.1
+httpx==0.28.1
+# .txt 파일 올리기(API-011 multipart) — 없으면 파일 미리보기가 500 이다
+python-multipart==0.0.20
+
+# 생성 LLM (LLM_PROVIDER=anthropic 일 때). D-04 에서 쓴다
+anthropic==0.69.0
+
+# 공유 카드 PNG 생성 (API-033 format=image · FR-009 · FR-010). 한글 폰트는 Dockerfile 이 넣는다
+pillow==11.0.0
+
+# 업무 층 그래프 (D-15 app/graph/) — 장애 대응 층은 쓰지 않는다(D-03 1.2)
+langgraph==0.2.76
+langchain-core==0.3.86

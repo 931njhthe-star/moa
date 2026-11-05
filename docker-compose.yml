@@ -1,9 +1,58 @@
-# 로컬 개발용 — 백엔드와 프론트엔드를 한 번에 띄운다 (docker compose up --build)
+# 배포 구성 — D-03 시스템정의서 v1.3 2.2 · 7절이 정본이다 (M-04 이행이 이 파일을 그대로 쓴다)
+#
+#   docker compose up --build                                          배포 · 시연 (밖으로 여는 포트는 frontend 8501 하나)
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   로컬 개발 (backend 8000 도 연다)
+#
+# 장애 대응 층(healing 컨테이너)은 아직 없다 — D-03 v1.2 결정 ⑫. 생기면 이 파일에 서비스를 더한다.
+#
+# DB 는 db 컨테이너다 (D-03 v1.3 결정 ⑬ · PRD v1.7 FR-029). 비밀번호는 이 폴더의 .env 에 둔다:
+#   POSTGRES_PASSWORD=...      (compose 가 ${...} 치환에 읽는 파일 · gitignore 대상)
+# 처음 한 번 스키마 · 시드를 넣는다 (14 데모 시드 제외):
+#   docker compose run --rm backend python sql/run_sql.py
+#
+# 이미지 이름 — 로컬은 빌드, 서버(EC2)는 ECR 에서 받는다. 같은 파일을 쓴다:
+#   로컬  REGISTRY 없음 → moa-backend:latest · moa-frontend:latest 로 빌드
+#   서버  .env 에 REGISTRY=<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/ (끝의 / 포함)
+#         docker compose pull && docker compose up -d --no-build   (서버에서는 빌드하지 않는다)
+# backend · interpreter-primary · interpreter-backup 은 같은 이미지(moa-backend)를 쓴다
 services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?이 폴더의 .env 에 POSTGRES_PASSWORD 를 넣는다}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # down -v 금지 — 주문 · 사건 기록이 지워진다 (D-03 7.2 #10)
+    # 밖으로 열지 않는다 (D-03 7.2 #9). 호스트에서 붙으려면 docker-compose.dev.yml
+    expose:
+      - "5432"
+    # 기반 저장소라 R-14 의 "no" 대상이 아니다. F-6 은 DB 를 멈추지 않고 앱 안 menu_store block 으로 주입한다 (D-03 2.2)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    # 밖으로 열지 않는다 — 화면이 컨테이너 네트워크 안에서 http://backend:8000 으로 부른다(D-03 2.1 · 7.2)
+    expose:
+      - "8000"
+    # .env 는 이미지에 넣지 않는다(.dockerignore) — 실행할 때 넘긴다. 없으면 DB 없이 뜬다(/health degraded)
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # .env 의 localhost 주소를 덮는다 — 컨테이너 안에서 localhost 는 그 컨테이너 자신이다
+      ORDER_INTERPRETER_PRIMARY_URL: http://interpreter-primary:8101
+      ORDER_INTERPRETER_BACKUP_URL: http://interpreter-backup:8102
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"          # R-14 — Docker 가 먼저 되살리면 F-3 탐지 · 복구를 잴 수 없다 (D-03 2.2)
     healthcheck:
       # slim 이미지에는 curl이 없어서 파이썬으로 /health를 확인한다
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -11,13 +60,53 @@ services:
       timeout: 3s
       retries: 5
 
+  # 주문 해석 서비스 2계통 (D-02 DEP-001 · D-03 2.2) — 백엔드와 같은 이미지, 역할만 다르다. 밖으로 열지 않는다
+  interpreter-primary:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8101"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: primary
+      # llm = 실제 LLM(LLM_MODEL) · rules = 같은 입력 같은 결과(장애 실험 반복용). 기본은 llm (D-03 v1.2 7.1)
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}
+      # 장애 주입 상태를 DB 에서 읽는다 — 컨테이너 안 localhost 는 자기 자신이라 db 로 덮는다 (D-03 v1.3 4절)
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"          # F-1 · F-2 · F-5 주입 대상 — Docker 가 먼저 되살리면 복구를 잴 수 없다 (R-14)
+
+  interpreter-backup:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8102"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: backup
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
+
   frontend:
     build: ./frontend
+    image: ${REGISTRY:-}moa-frontend:${TAG:-latest}
     ports:
-      - "8501:8501"
+      - "8501:8501"        # 밖으로 여는 유일한 포트 (D-03 7.2)
     environment:
       # 컨테이너끼리는 서비스 이름(backend)으로 접속한다
       BACKEND_URL: http://backend:8000
+    restart: unless-stopped   # 화면이 죽어도 업무 처리는 돌아야 한다 (D-03 2.2)
     depends_on:
       backend:
         condition: service_healthy   # 백엔드 /health가 성공한 뒤에 시작
+
+volumes:
+  pgdata:

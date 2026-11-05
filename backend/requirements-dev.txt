@@ -3,3 +3,4 @@
 pytest
 pytest-cov
 httpx
+openpyxl          # tools/build_sbux_seed.py — 스타벅스 메뉴 엑셀 → 시드 SQL

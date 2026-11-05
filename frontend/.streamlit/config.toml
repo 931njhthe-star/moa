@@ -1,0 +1,20 @@
+# 정본 시안 `Moa_전체화면.svg`의 색을 Streamlit 테마로 옮긴 것 — 값의 출처는 moa/tokens.py :root
+# 주 색은 초록(--moa-green)이다. 옵션 버튼 묶음 · 포커스 테두리처럼 Streamlit이 직접 칠하는 곳에 쓰인다.
+[theme]
+base = "light"
+primaryColor = "#2E7154"            # --moa-green
+backgroundColor = "#FAFAF9"         # --moa-bg
+secondaryBackgroundColor = "#FFFFFF" # --moa-surface
+textColor = "#18181B"               # --moa-ink
+font = "sans serif"
+
+[client]
+# 사이드바 네비게이션을 쓰지 않는다 (P-06 U-2 — 사이드바 · 화면 제목 없음)
+showSidebarNavigation = false
+toolbarMode = "minimal"
+
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

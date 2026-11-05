@@ -165,32 +165,41 @@ jobs:
           echo "::error::EC2_HOST 22번에 접속하지 못했다 — EC2_HOST(퍼블릭 IP) · 인스턴스 실행 상태 · EC2_SG_ID 가 맞는지 확인"
           exit 1
 
-      - name: EC2 배포 (compose 파일 갱신 → pull → up)
+      - name: EC2 배포 파일 복사 (공용 + 앱 compose · 게이트웨이 · 소켓 프록시 설정 · 스크립트)
         run: |
-          scp -i ~/.ssh/ec2.pem docker-compose.yml "$SSH_TARGET:~/moa/docker-compose.yml"
-          # 서버는 빌드하지 않는다 — EC2 의 IAM 역할로 ECR 에서 이번 커밋 이미지를 받는다 (README 방법 3)
+          # 소스 코드는 보내지 않는다 — 서버는 빌드하지 않고 ECR 이미지를 받는다 (README 방법 3)
+          tar czf - docker-compose.core.yml docker-compose.app.yml gateway socket-proxy scripts | ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "mkdir -p ~/moa && tar xzf - -C ~/moa"
+
+      - name: EC2 순차 배포 (공용 → 해석 서비스 → 앱 A → A UP 확인 → 앱 B)
+        run: |
+          # 두 앱 스택을 동시에 내리지 않는다. A 가 게이트웨이에서 UP 이 안 되면 B 는 그대로 두고 실패한다 (PRD 5.4)
           ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" bash -s <<SCRIPT
           set -euo pipefail
           cd ~/moa
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-          export TAG=$TAG
-          docker compose pull
-          docker compose up -d --no-build
-          docker image prune -f
+          TAG=$TAG bash scripts/deploy.sh
           SCRIPT
 
-      - name: 배포 확인 (화면 8501 응답)
+      - name: 배포 확인 (게이트웨이 8501 응답)
         run: |
           for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" \
-                 "curl -fsS http://localhost:8501/_stcore/health" >/dev/null 2>&1; then
+            if ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "curl -fsS http://localhost:8501/_stcore/health" >/dev/null 2>&1; then
               echo "배포 성공: $TAG"; exit 0
             fi
             sleep 5
           done
-          echo "화면이 150초 안에 응답하지 않았다"
-          ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "cd ~/moa && docker compose ps && docker compose logs --tail 50"
+          echo "게이트웨이가 150초 안에 응답하지 않았다"
           exit 1
+
+      - name: 배포 실패 시 상태 · 로그
+        if: failure() && steps.runner_ip.outputs.ip != ''
+        run: |
+          ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" bash -s <<'SCRIPT' || true
+          cd ~/moa
+          docker ps -a --format 'table {{.Names}} {{.Image}} {{.Status}}' | grep '^moa-' | sort
+          docker exec moa-core-gateway-1 wget -qO- 'http://127.0.0.1:8404/stats;csv' | grep '^app,' | cut -d, -f1,2,18
+          for c in moa-core-gateway-1 moa-a-backend-1 moa-b-backend-1; do echo "--- $c"; docker logs --tail 30 "$c" 2>&1; done
+          SCRIPT
 
       - name: 러너 IP 허용 회수
         if: always() && steps.runner_ip.outputs.ip != ''

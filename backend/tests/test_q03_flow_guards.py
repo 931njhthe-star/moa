@@ -279,39 +279,75 @@ def test_without_a_cache_the_db_failure_surfaces(monkeypatch):
 
 
 # --- TC-133 배포 compose — 외부 포트 1개 · restart 정책 ------------------------------------
-def compose(name="docker-compose.yml"):
+# PRD 5.4: 공용 스택(docker-compose.core.yml) + 앱 스택 A/B(docker-compose.app.yml 을 -p moa-a · moa-b 로 두 번)
+def compose(name):
     return yaml.safe_load((REPO / name).read_text(encoding="utf-8"))
 
 
-def test_deploy_compose_opens_only_the_frontend_port():
-    services = compose()["services"]
+CORE = "docker-compose.core.yml"
+APP = "docker-compose.app.yml"
 
-    published = {name: svc.get("ports") for name, svc in services.items() if svc.get("ports")}
-    assert published == {"frontend": ["8501:8501"]}          # 밖으로 여는 포트는 하나다
-    assert services["backend"].get("expose") == ["8000"]
+
+def test_deploy_compose_opens_only_the_gateway_port():
+    core, app = compose(CORE)["services"], compose(APP)["services"]
+
+    published = {name: svc.get("ports") for name, svc in {**core, **app}.items() if svc.get("ports")}
+    assert published == {"gateway": ["8501:8501"]}           # 밖으로 여는 포트는 게이트웨이 하나다
+    assert app["backend"].get("expose") == ["8000"]
+    assert app["frontend"].get("expose") == ["8501"]
 
 
 def test_work_containers_do_not_restart_themselves():
     """R-14 — Docker 가 먼저 되살리면 F-3 탐지 · 복구를 잴 수 없다."""
-    services = compose()["services"]
+    core, app = compose(CORE)["services"], compose(APP)["services"]
 
-    assert services["backend"]["restart"] == "no"
-    assert services["interpreter-primary"]["restart"] == "no"
-    assert services["interpreter-backup"]["restart"] == "unless-stopped"
-    assert services["frontend"]["restart"] == "unless-stopped"
+    assert app["backend"]["restart"] == "no"
+    assert core["interpreter-primary"]["restart"] == "no"
+    assert core["interpreter-backup"]["restart"] == "unless-stopped"
+    assert app["frontend"]["restart"] == "unless-stopped"
 
 
 def test_interpreter_source_defaults_to_llm():
-    services = compose()["services"]
+    services = compose(CORE)["services"]
 
     for name in ("interpreter-primary", "interpreter-backup"):
         assert services[name]["environment"]["INTERPRETER_SOURCE"] == "${INTERPRETER_SOURCE:-llm}"
 
 
-def test_dev_override_is_the_only_place_that_opens_the_backend():
-    dev = compose("docker-compose.dev.yml")["services"]
+def test_db_lives_only_in_the_core_stack():
+    """앱 파일에 db 를 두면 프로젝트(moa-a · moa-b)마다 DB 가 따로 생겨 전환 뒤 세션 복원이 깨진다."""
+    assert "db" in compose(CORE)["services"]
+    assert "db" not in compose(APP)["services"]
+    assert compose(CORE)["volumes"]["pgdata"]["name"] == "moa_pgdata"   # 옛 단일 스택 볼륨을 이어 쓴다
 
-    assert dev["backend"]["ports"] == ["8000:8000"]
+
+def test_app_stacks_stay_apart():
+    """frontend 는 자기 스택 네트워크에만 — 같은 스택의 backend 만 보인다."""
+    app = compose(APP)
+
+    assert app["services"]["frontend"]["networks"] == ["default"]
+    assert app["networks"]["default"]["name"] == "${COMPOSE_PROJECT_NAME}_default"
+    assert "container_name" not in app["services"]["backend"]   # 이름은 compose 가 moa-<a|b>-backend-1 로 정한다
+
+
+def test_docker_control_goes_only_through_the_socket_proxy():
+    """PRD 5.2 — healing 은 Docker 소켓에 직접 붙지 않고, 소켓 프록시는 healing 만 닿는 내부 네트워크에 둔다."""
+    core = compose(CORE)
+    services = core["services"]
+
+    mounts = {name: [v for v in svc.get("volumes", []) if "docker.sock" in v] for name, svc in services.items()}
+    assert {name for name, v in mounts.items() if v} == {"socket-proxy"}
+    assert services["socket-proxy"]["networks"] == ["ctl"]
+    assert core["networks"]["ctl"]["internal"] is True
+    assert "ctl" in services["healing"]["networks"]
+    assert services["healing"]["environment"]["DOCKER_HOST"] == "tcp://socket-proxy:2375"
+
+
+def test_dev_overrides_open_ports_only_on_localhost():
+    core_dev = compose("docker-compose.core.dev.yml")["services"]
+    app_dev = compose("docker-compose.app.dev.yml")["services"]
+
     # D-03 v1.3 결정 ⑬ — db 는 호스트의 run_sql.py · uvicorn 용으로 127.0.0.1 에만 연다
-    assert dev["db"]["ports"] == ["127.0.0.1:5433:5432"]
-    assert set(dev) == {"backend", "db"}
+    assert core_dev["db"]["ports"] == ["127.0.0.1:5433:5432"]
+    for svc in [*core_dev.values(), *app_dev.values()]:
+        assert all(p.startswith("127.0.0.1:") for p in svc["ports"])

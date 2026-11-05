@@ -1,0 +1,148 @@
+# 공용 스택 (프로젝트 moa-core) — PRD 5.4 · 기획서 6절 배포 구성
+#
+# 두 앱 스택(moa-a · moa-b)이 함께 쓰는 서비스를 둔다: gateway · db · 주문 해석 서비스 2계통
+#   (socket-proxy · healing 은 다음 단계에서 이 파일에 더한다)
+#
+#   sh scripts/init-networks.sh                                       처음 한 번 (네트워크 3개)
+#   docker compose -f docker-compose.core.yml -p moa-core up -d       공용 스택을 먼저
+#   docker compose -f docker-compose.app.yml  -p moa-a    up -d       앱 복제본 A
+#   docker compose -f docker-compose.app.yml  -p moa-b    up -d       앱 복제본 B
+#
+# 네트워크는 compose 가 만들지 않고 미리 만든 것을 쓴다(external).
+#   앱 스택 네트워크(moa-a_default · moa-b_default)는 게이트웨이가 공용 스택에서 먼저 붙어야 해서
+#   앱 스택보다 먼저 있어야 한다 — compose 의 depends_on 은 프로젝트를 넘지 못한다
+#
+# 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD · HEALING_RW_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
+services:
+  # 밖으로 여는 유일한 포트 8501. 두 앱 스택 네트워크에 모두 붙어 A · B frontend 로 나눠 보낸다
+  # 설정: gateway/haproxy.cfg (서버에도 이 파일을 같은 경로로 둔다)
+  gateway:
+    image: haproxy:3.2-alpine
+    ports:
+      - "8501:8501"
+    expose:
+      - "8404"             # 상태 페이지 — moa_core 안에서만 (healing 이 읽는다)
+    volumes:
+      - ./gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - moa_core
+      - moa-a_default
+      - moa-b_default
+    restart: unless-stopped
+    mem_limit: 64m       # 실측 약 14MB
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?이 폴더의 .env 에 POSTGRES_PASSWORD 를 넣는다}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # down -v 금지 — 주문 · 사건 기록이 지워진다
+    expose:
+      - "5432"
+    networks: [moa_core]
+    restart: unless-stopped
+    mem_limit: 256m       # 실측 약 32MB (유휴)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 주문 해석 서비스 2계통 — backend 와 같은 이미지, 역할만 다르다. 두 앱 스택이 함께 쓴다
+  interpreter-primary:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8101"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: primary
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}   # llm · rules(장애 실험 반복용)
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    expose:
+      - "8101"
+    networks: [moa_core]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"          # F-1 · F-2 · F-5 주입 대상 — Docker 가 먼저 되살리면 복구를 잴 수 없다 (R-14)
+    mem_limit: 192m       # 실측 약 45MB (유휴)
+
+  interpreter-backup:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8102"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: backup
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    expose:
+      - "8102"
+    networks: [moa_core]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
+    mem_limit: 192m       # 실측 약 45MB (유휴)
+
+  # Docker 소켓 앞의 관문 — 조회 + 허용목록 컨테이너 재시작만 통과 (socket-proxy/haproxy.cfg)
+  # healing 만 붙는 내부 네트워크 ctl 에만 둔다 → backend 등 다른 컨테이너는 이 프록시에 닿지 않는다
+  socket-proxy:
+    image: haproxy:3.2-alpine
+    user: root             # docker.sock (root:docker 660) 을 읽으려면 필요. 대신 API 는 cfg 에서 막는다
+    volumes:
+      - ./socket-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "2375"
+    networks: [ctl]
+    restart: unless-stopped
+    mem_limit: 32m       # 실측 약 12MB
+
+  # 장애 대응 층 (Monitor · Diagnosis · Recovery Worker · Verification) — PRD 5.2
+  # healing 코드가 들어오기 전까지 빈 명령으로 자리만 잡는다 → 코드가 생기면 command 를 ["python", "-m", "healing"] 으로
+  healing:
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["sleep", "infinity"]
+    # backend/.env 를 통째로 넘기지 않는다 — LLM 키 등 healing 이 쓰지 않는 비밀값까지 들어가므로 필요한 값만 준다
+    environment:
+      # 연결 규칙 (기획서 6절 배포 구성) — healing 담당과 합의한 값
+      DOCKER_HOST: tcp://socket-proxy:2375
+      GATEWAY_STATS_URL: "http://gateway:8404/stats;csv"
+      HEALING_ALLOWLIST: moa-a-backend-1,moa-b-backend-1,moa-a-frontend-1,moa-b-frontend-1
+      # 대상 상태 확인: http://<허용목록 이름>:8000/health (backend 는 moa_core 에서 컨테이너 이름으로 보인다)
+      # healing_rw = healing 스키마 R/W · app 스키마 읽기만 (sql/01_roles.sql)
+      DATABASE_URL: postgresql://healing_rw:${HEALING_RW_PASSWORD:?이 폴더의 .env 에 HEALING_RW_PASSWORD 를 넣는다 (backend/.env 와 같은 값)}@db:5432/postgres
+    networks:
+      - moa_core
+      - ctl
+    depends_on:
+      db:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 192m       # 코드 들어오면 다시 잰다
+
+networks:
+  ctl:
+    internal: true         # 밖으로 나가는 경로 없음 · healing ↔ socket-proxy 전용 (compose 가 moa-core_ctl 로 만든다)
+  moa_core:
+    name: moa_core
+    external: true
+  moa-a_default:
+    name: moa-a_default
+    external: true
+  moa-b_default:
+    name: moa-b_default
+    external: true
+
+volumes:
+  pgdata:
+    # 이름을 고정한다 — 기존 단일 compose(프로젝트 moa)의 볼륨을 그대로 이어 쓴다. 프로젝트 이름이 바뀌어도 새 DB 가 생기지 않는다
+    name: moa_pgdata

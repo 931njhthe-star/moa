@@ -1,0 +1,63 @@
+# 앱 스택 (프로젝트 moa-a · moa-b) — 같은 파일을 프로젝트 이름만 바꿔 두 번 띄운다 (PRD 5.4)
+#
+#   docker compose -f docker-compose.app.yml -p moa-a up -d
+#   docker compose -f docker-compose.app.yml -p moa-b up -d
+#
+# 컨테이너 이름은 compose 가 정한다: moa-a-frontend-1 · moa-a-backend-1 · moa-b-frontend-1 · moa-b-backend-1
+#   게이트웨이 · healing 은 서비스 이름이 아니라 이 컨테이너 이름으로 대상을 지정한다 (container_name 을 쓰지 않는다)
+#
+# 네트워크
+#   default  = moa-<a|b>_default — 자기 스택 전용. frontend 는 여기에만 붙어 같은 스택의 backend 만 본다
+#   moa_core = 공용 스택(db · interpreter). backend 만 붙는다
+#   둘 다 미리 만든다(scripts/init-networks.sh). 공용 스택(core)을 먼저 띄운다 — depends_on 은 프로젝트를 넘지 못한다
+#
+# 처음 한 번 DB 스키마 · 시드 (공용 db 가 healthy 인 뒤):
+#   docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py
+services:
+  backend:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    expose:
+      - "8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # .env 의 localhost 주소를 덮는다 — 공용 스택 서비스는 moa_core 네트워크에서 서비스 이름으로 찾는다
+      ORDER_INTERPRETER_PRIMARY_URL: http://interpreter-primary:8101
+      ORDER_INTERPRETER_BACKUP_URL: http://interpreter-backup:8102
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?이 폴더의 .env 에 POSTGRES_PASSWORD 를 넣는다}@db:5432/postgres
+    networks:
+      - default
+      - moa_core
+    restart: "no"          # F-3 주입 대상 — 재시작은 healing Recovery Worker 의 허용목록 액션만 (R-14)
+    mem_limit: 384m       # 실측 약 60MB (유휴) — 분석 중 LangGraph · LLM 응답만큼 는다
+    healthcheck:
+      # slim 이미지에는 curl 이 없어서 파이썬으로 /health 를 확인한다
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    image: ${REGISTRY:-}moa-frontend:${TAG:-latest}
+    expose:
+      - "8501"             # 밖으로 열지 않는다 — 게이트웨이만 들어온다
+    environment:
+      BACKEND_URL: http://backend:8000   # default 네트워크에서는 같은 스택의 backend 만 보인다
+    networks:
+      - default
+    restart: unless-stopped
+    mem_limit: 256m       # 실측 약 46MB (유휴) — 접속 세션마다 는다
+    depends_on:
+      backend:
+        condition: service_healthy
+
+networks:
+  default:
+    name: ${COMPOSE_PROJECT_NAME}_default   # -p moa-a → moa-a_default
+    external: true
+  moa_core:
+    name: moa_core
+    external: true

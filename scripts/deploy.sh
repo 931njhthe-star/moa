@@ -67,6 +67,26 @@ except Exception:
   return 1
 }
 
+# 옛 앱 이미지 정리 — 배포마다 커밋 sha 태그 이미지(약 1.3GB)가 남아 디스크가 찬다.
+#   `docker image prune` 은 태그 없는 이미지만 지우므로 sha 태그는 여기서 지운다.
+#   컨테이너가 쓰는 이미지(지금 버전) + 쓰지 않는 것 중 최신 KEEP_PREVIOUS 벌(되돌리기용)만 남긴다
+KEEP_PREVIOUS=${KEEP_PREVIOUS:-1}
+cleanup_images() {
+  local used repo kept id ref removed=0
+  used=$(docker ps -aq | xargs -r docker inspect -f '{{.Image}}' | sed 's/^sha256://' | cut -c1-12 | sort -u)
+  for repo in moa-backend moa-frontend; do
+    kept=""
+    # docker images 는 만든 시각 최신순이다. 같은 이미지에 태그가 여럿(sha · latest)이면 한 벌로 센다
+    while read -r id ref; do
+      echo "$used" | grep -qx "$id" && continue          # 지금 쓰는 이미지
+      echo "$kept" | grep -qw "$id" && continue           # 이미 남기기로 한 이미지의 다른 태그
+      if [ "$(echo "$kept" | wc -w)" -lt "$KEEP_PREVIOUS" ]; then kept="$kept $id"; continue; fi
+      docker rmi "$ref" >/dev/null 2>&1 && removed=$((removed + 1))
+    done < <(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' | awk -v r="$repo" '$2 ~ ("(^|/)" r ":") && $2 !~ /:<none>$/')
+  done
+  log "옛 앱 이미지 ${removed}개 정리 (지금 버전 + 직전 ${KEEP_PREVIOUS}벌 보존) · 디스크 $(df -h / | awk 'NR==2 {print $4}') 남음"
+}
+
 on_exit() {
   # 배포가 중간에 실패해도 빼 둔 스택은 되돌리고 healing 은 다시 켠다
   gw_cmd "set server app/a state ready"
@@ -145,7 +165,10 @@ done
 trap - EXIT
 log "healing 켬"
 "${CORE[@]}" up -d --no-build --no-deps healing >/dev/null
-[ "$SKIP_PULL" = "1" ] || docker image prune -f >/dev/null
+if [ "$SKIP_PULL" != "1" ]; then
+  cleanup_images
+  docker image prune -f >/dev/null      # 태그 없는(dangling) 이미지
+fi
 
 log "배포 완료 — 게이트웨이 a=$(gw_state a) b=$(gw_state b)"
 docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | grep '^moa-' | sort

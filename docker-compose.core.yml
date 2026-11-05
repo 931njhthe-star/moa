@@ -1,7 +1,7 @@
 # 공용 스택 (프로젝트 moa-core) — PRD 5.4 · 기획서 6절 배포 구성
 #
-# 두 앱 스택(moa-a · moa-b)이 함께 쓰는 서비스를 둔다: db · 주문 해석 서비스 2계통
-#   (gateway · socket-proxy · healing 은 다음 단계에서 이 파일에 더한다)
+# 두 앱 스택(moa-a · moa-b)이 함께 쓰는 서비스를 둔다: gateway · db · 주문 해석 서비스 2계통
+#   (socket-proxy · healing 은 다음 단계에서 이 파일에 더한다)
 #
 #   sh scripts/init-networks.sh                                       처음 한 번 (네트워크 3개)
 #   docker compose -f docker-compose.core.yml -p moa-core up -d       공용 스택을 먼저
@@ -14,6 +14,22 @@
 #
 # 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
 services:
+  # 밖으로 여는 유일한 포트 8501. 두 앱 스택 네트워크에 모두 붙어 A · B frontend 로 나눠 보낸다
+  # 설정: gateway/haproxy.cfg (서버에도 이 파일을 같은 경로로 둔다)
+  gateway:
+    image: haproxy:3.2-alpine
+    ports:
+      - "8501:8501"
+    expose:
+      - "8404"             # 상태 페이지 — moa_core 안에서만 (healing 이 읽는다)
+    volumes:
+      - ./gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - moa_core
+      - moa-a_default
+      - moa-b_default
+    restart: unless-stopped
+
   db:
     image: postgres:16
     environment:
@@ -73,6 +89,12 @@ services:
 networks:
   moa_core:
     name: moa_core
+    external: true
+  moa-a_default:
+    name: moa-a_default
+    external: true
+  moa-b_default:
+    name: moa-b_default
     external: true
 
 volumes:

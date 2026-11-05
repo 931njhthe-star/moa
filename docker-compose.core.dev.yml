@@ -7,3 +7,8 @@ services:
   db:
     ports:
       - "127.0.0.1:5433:5432"
+
+  # 게이트웨이 상태 페이지를 브라우저로 본다: http://localhost:8404/stats
+  gateway:
+    ports:
+      - "127.0.0.1:8404:8404"

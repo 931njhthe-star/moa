@@ -83,6 +83,8 @@ jobs:
   # 필요한 Secrets: AWS_ACCESS_KEY_ID · AWS_SECRET_ACCESS_KEY (ECR push 권한)
   #                 ECR_REGISTRY (<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com)
   #                 EC2_HOST · EC2_SSH_KEY (PEM 전체)
+  #                 EC2_SG_ID (EC2 보안 그룹 ID, sg-...) — 러너 IP 를 배포하는 동안만 22번에 허용한다
+  #                 IAM 사용자에 ec2:AuthorizeSecurityGroupIngress · ec2:RevokeSecurityGroupIngress 권한 필요
   # SSH 사용자는 기본 ubuntu — 다르면 저장소 Variables 에 EC2_USER 를 둔다 (Amazon Linux 는 ec2-user)
   deploy:
     needs: [build]
@@ -121,12 +123,29 @@ jobs:
             docker push "$img:latest"
           done
 
+      # 러너는 매번 다른 IP 에서 접속한다 → 보안 그룹에 이 러너 IP/32 만 잠깐 열고 마지막 단계에서 반드시 닫는다
+      - name: 러너 IP 를 보안 그룹 22번에 허용
+        id: runner_ip
+        run: |
+          ip=$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+          aws ec2 authorize-security-group-ingress --group-id "${{ secrets.EC2_SG_ID }}"             --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$ip/32,Description=github-actions-deploy}]"
+          echo "허용: $ip/32"
+
       - name: SSH 키 준비
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2.pem
           chmod 600 ~/.ssh/ec2.pem
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          # 규칙이 반영되기까지 몇 초 걸릴 수 있어 재시도한다
+          for i in $(seq 1 6); do
+            if ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null                && [ -s ~/.ssh/known_hosts ]; then
+              exit 0
+            fi
+            echo "22번 접속 대기 중 ($i/6)"; sleep 5
+          done
+          echo "::error::EC2_HOST 22번에 접속하지 못했다 — EC2_HOST(퍼블릭 IP) · 인스턴스 실행 상태 · EC2_SG_ID 가 맞는지 확인"
+          exit 1
 
       - name: EC2 배포 (compose 파일 갱신 → pull → up)
         run: |
@@ -154,3 +173,8 @@ jobs:
           echo "화면이 150초 안에 응답하지 않았다"
           ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "cd ~/moa && docker compose ps && docker compose logs --tail 50"
           exit 1
+
+      - name: 러너 IP 허용 회수
+        if: always() && steps.runner_ip.outputs.ip != ''
+        run: |
+          aws ec2 revoke-security-group-ingress --group-id "${{ secrets.EC2_SG_ID }}"             --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32"

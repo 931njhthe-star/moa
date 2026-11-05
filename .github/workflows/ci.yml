@@ -8,6 +8,24 @@ on:
     branches: [main, dev]   # main, dev 브랜치로 향하는 PR일 때 실행
 
 jobs:
+  # 정적 검사 (PRD 6.4.1 · v1.9) — 실행 전에 확실히 깨지는 것만 잡는다:
+  #   E9 구문 오류 · F63 잘못된 비교 · F7 잘못된 문장 위치 · F82 정의되지 않은 이름.
+  #   스타일 규칙은 넣지 않는다 — 기존 코드를 고치지 않고 붙이기 위해서다
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: ruff 설치
+        run: pip install ruff==0.8.4
+
+      - name: 정적 검사
+        run: ruff check --select E9,F63,F7,F82 --output-format github backend frontend
+
   test-backend:
     runs-on: ubuntu-24.04
     defaults:
@@ -43,9 +61,9 @@ jobs:
         run: python sql/run_sql.py
 
       - name: 테스트 실행
-        # 커버리지 75% 미만이면 테스트가 모두 통과해도 실패 → 테스트를 지우는 변경을 막는다
-        # (실측 79% — 2026-11-03. 교안 검사기 기준이던 85% 에서 실제 서비스 코드 기준으로 다시 잡았다)
-        run: pytest -q --cov=app --cov-fail-under=75
+        # 커버리지 80% 미만이면 테스트가 모두 통과해도 실패 → 테스트를 지우는 변경을 막는다
+        # (PRD SC-10 80% 에 맞춤 — v1.9. 실측 84.9% · 2026-11-04 CI 41855235629. 종전 기준 75%)
+        run: pytest -q --cov=app --cov-fail-under=80
 
   test-frontend:
     runs-on: ubuntu-24.04
@@ -67,7 +85,7 @@ jobs:
         run: pytest -q --cov=api_client --cov-fail-under=85
 
   build:
-    needs: [test-backend, test-frontend]   # 두 테스트가 모두 성공해야 빌드된다
+    needs: [lint, test-backend, test-frontend]   # 정적 검사 · 두 테스트가 모두 성공해야 빌드된다
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -178,3 +196,28 @@ jobs:
         if: always() && steps.runner_ip.outputs.ip != ''
         run: |
           aws ec2 revoke-security-group-ingress --group-id "${{ secrets.EC2_SG_ID }}"             --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32"
+
+  # CI 실패 → GitHub Issue 자동 생성 · 커밋 작성자에게 할당 (PRD 6.4.3 · SC-11 · v1.9)
+  #   main · dev 로의 push 에서만 만든다 — PR 마다 만들면 작업 중 실패로 이슈가 쌓인다
+  report-failure:
+    needs: [lint, test-backend, test-frontend, build]
+    if: failure() && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: 실패 이슈 생성 · 할당
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="[CI 실패] ${GITHUB_REF_NAME} ${GITHUB_SHA::7}"
+          body="CI 파이프라인이 실패했습니다. 실행 기록에서 실패 단계와 로그를 확인하세요.
+          - 브랜치: ${GITHUB_REF_NAME}
+          - 커밋: ${GITHUB_SHA}
+          - 작성자: ${GITHUB_ACTOR}
+          - 실행 기록: ${RUN_URL}"
+          # 할당이 실패해도(협업자가 아닌 계정 등) 이슈는 남긴다
+          gh issue create --title "$title" --body "$body" --assignee "$GITHUB_ACTOR" \
+            || gh issue create --title "$title" --body "$body"

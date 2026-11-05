@@ -152,7 +152,8 @@ def _as_item(row: dict) -> dict:
             "review_reason": row.get("review_reason"),
             "review_reason_text": row.get("review_reason_text"),
             "removed": bool(row.get("_removed")), "candidates": row.get("candidates") or [],
-            "unit_price": row.get("unit_price"), "estimated_price": row.get("estimated_price")}
+            "unit_price": row.get("unit_price"), "estimated_price": row.get("estimated_price"),
+            "custom_request": row.get("custom_request")}          # 실제 _insert_items 도 넣는 칸
 
 
 def _as_question(row: dict) -> dict:

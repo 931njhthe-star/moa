@@ -41,6 +41,10 @@ _ORDER_VERB = re.compile(r"주세요|주시|부탁|먹을래|마실래|먹을게
                          # (2026-11-05 2차 보고 1번). 주문하겠다는 어미가 붙었을 때만 센다
                          r"시킬게|시킬래|할게요|할래요|주문할게|주문할래|주문이요|주문해\s*주|골라|담아")
 _ORDER_QTY = re.compile(r"-?\d+\s*(?:잔|개|컵)|[한두세네]\s*잔|하나|둘")
+# 잔 수를 **세는** 말 — "일단 10잔으로 확인되네요" · "총 8잔이죠?" (2026-11-05 5차 보고).
+# 수량이 있지만 주문이 아니라 담당자의 집계다. 주문 문형에서 뺀다
+TALLY = re.compile(r"(?:총|모두|전부|일단|다\s*합쳐|합쳐서)\s*\d+\s*잔|"
+                   r"\d+\s*잔\s*(?:으로|이)?\s*(?:확인|맞|정리|되네|이네|이에요|입니다|이죠|인가|인데)")
 
 # 기타 요청 — 금액에 반영하지 않는다 (P-06)
 #   "텀블러"는 뺐다 — 개인컵 여부(cup)가 메뉴판 옵션이 됐다(2026-11-04). 남겨 두면 "아아 텀블러로"
@@ -427,7 +431,7 @@ def order_pattern(text: str) -> bool:
     메뉴를 못 알아들은 문장을 **버릴 것인가 물을 것인가**를 가른다 (consolidate · 사용자 보고 2번).
     """
     scope = order_text(text)
-    if _PROPOSAL.search(scope):
+    if _PROPOSAL.search(scope) or TALLY.search(scope):
         return False
     return bool(_ORDER_VERB.search(scope) or _ORDER_QTY.search(scope))
 
@@ -583,7 +587,13 @@ def from_contract(events: list[dict], messages: list[dict], *,
             continue
         text = message["text"]
         person = event.get("person") or message["sender"]
-        evidence = [mid for mid in event.get("evidence_message_ids") or [] if mid in known]
+        # 근거에는 **그 이벤트의 메시지가 늘 들어간다** — 모델이 앞 메시지만 적어 낸 일이 있었다
+        # (이지은 대리 주문의 근거가 담당자 공지 m1, 이수빈 대리 주문의 근거가 m17 · 2026-11-05 5차 보고).
+        # 앞 메시지는 참조 주문("저도 그걸로")일 때만 근거가 된다
+        evidence = [mid for mid in event.get("evidence_message_ids") or []
+                    if mid in known and mid != message["message_id"]] if event.get("is_reference") else []
+        evidence = sorted(set(evidence) | {message["message_id"]},
+                          key=lambda mid: (by_id.get(mid) or {}).get("seq") or 0)
         converted = {
             "message_id": message["message_id"],
             "seq": message.get("seq") or message.get("order"),

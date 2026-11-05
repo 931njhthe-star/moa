@@ -37,7 +37,9 @@ INSERT INTO app.brand_alias (alias, resolved_brand_id, kind, display_name) VALUE
   ('탐앤탐스',    'generic',   'unsupported',  '탐앤탐스'),
   ('더벤티',      'generic',   'unsupported',  '더벤티'),
   ('매머드',      'generic',   'unsupported',  '매머드커피'),
-  ('매머드커피',  'generic',   'unsupported',  '매머드커피')
+  ('매머드커피',  'generic',   'unsupported',  '매머드커피'),
+  -- 공차 — PRD 2.4.1 · 8.1 #24 "스벅 갈까 공차 갈까" 되묻기 사례 (v1.9 · U-17)
+  ('공차',        'generic',   'unsupported',  '공차')
 ON CONFLICT (alias) DO UPDATE
    SET resolved_brand_id = EXCLUDED.resolved_brand_id,
        kind              = EXCLUDED.kind,

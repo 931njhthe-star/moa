@@ -117,6 +117,10 @@ def interpreter(monkeypatch):
         return reply
 
     monkeypatch.setattr(interpreter_client, "interpret", fake)
+    # 누락 메시지를 규칙으로 채운 뒤의 메뉴 근거 판정(_demote_unsupported)은 메뉴판을 읽는다 — 이 테스트들의
+    # 메시지는 "아아 톨 N잔"이라 메뉴가 있다. DB 없이 돌도록 그 판정만 고정한다(강등 자체는 test_user_fixes_1105e)
+    from app.services import consolidate
+    monkeypatch.setattr(consolidate, "menu_signal", lambda item, **k: "menu")
     return replies
 
 

@@ -9,8 +9,9 @@ CREATE TABLE IF NOT EXISTS healing.incident (
   incident_id           TEXT        PRIMARY KEY,
   trace_id              TEXT        NOT NULL,
   fault_code            TEXT        NOT NULL CHECK (fault_code IN ('DEP_HTTP_5XX','DEP_TIMEOUT','WORKER_DOWN',
-                                                                   'AGENT_OUTPUT_INVALID','REPEATED_FAILURE',
-                                                                   'DB_UNAVAILABLE','UNKNOWN')),
+                                                                   'AGENT_EXCEPTION','AGENT_OUTPUT_INVALID',
+                                                                   'REPEATED_FAILURE','DB_UNAVAILABLE',
+                                                                   'PROMPT_INJECTION','UNKNOWN')),
   status                TEXT        NOT NULL DEFAULT 'detected'
                                     CHECK (status IN ('detected','recovering','awaiting_approval',
                                                       'manual_check','recovered','failed')),
@@ -117,7 +118,12 @@ CREATE TABLE IF NOT EXISTS healing.runtime_metric (
   id          BIGSERIAL   PRIMARY KEY,
   metric_key  TEXT        NOT NULL CHECK (metric_key IN ('conn_fail_count','conn_latency_ms','db_query_p95_ms',
                                                          'db_pool_usage','dep_5xx_ratio','dep_latency_ms',
-                                                         'schema_invalid_count','checkpoint_age_sec')),
+                                                         'schema_invalid_count','checkpoint_age_sec',
+                                                         'timeout_count','agent_error_count','restart_count',
+                                                         'db_connection_error','slow_query_count',
+                                                         'schema_error_rate','validation_fail_rate',
+                                                         'injection_detect_count','circuit_open_count',
+                                                         'fallback_ratio')),
   target      TEXT        NOT NULL,
   value       NUMERIC     NOT NULL,
   threshold   NUMERIC,
@@ -150,3 +156,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_active_route ON healing.circuit_state (is_a
 CREATE INDEX IF NOT EXISTS idx_metric_recent   ON healing.runtime_metric (metric_key, target, measured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_metric_breached ON healing.runtime_metric (measured_at DESC)
   WHERE breached = true AND incident_id IS NULL;
+
+-- =====================================================================
+-- PRD v1.9 (2026-11-05) — 기존 DB 에도 붙도록 ALTER 로 둔다 (02_schema_app.sql 과 같은 방식)
+--   장애 코드 2종 추가: AGENT_EXCEPTION(FT-02) · PROMPT_INJECTION(F-7 선택)
+--   메트릭 키: 평가 메트릭 8종(FT-01 ~ FT-04 · 프롬프트 공격) + circuit_open_count · fallback_ratio (PRD 5.6.1)
+--   recovery_plan: Diagnosis 의 복구 계획(PRD 5.9.3) — 장애 대응 층이 채운다. 지금은 비어 있다
+-- =====================================================================
+ALTER TABLE healing.incident DROP CONSTRAINT IF EXISTS incident_fault_code_check;
+ALTER TABLE healing.incident ADD CONSTRAINT incident_fault_code_check
+  CHECK (fault_code IN ('DEP_HTTP_5XX','DEP_TIMEOUT','WORKER_DOWN','AGENT_EXCEPTION','AGENT_OUTPUT_INVALID',
+                        'REPEATED_FAILURE','DB_UNAVAILABLE','PROMPT_INJECTION','UNKNOWN'));
+ALTER TABLE healing.incident ADD COLUMN IF NOT EXISTS recovery_plan JSONB;
+
+ALTER TABLE healing.runtime_metric DROP CONSTRAINT IF EXISTS runtime_metric_metric_key_check;
+ALTER TABLE healing.runtime_metric ADD CONSTRAINT runtime_metric_metric_key_check
+  CHECK (metric_key IN ('conn_fail_count','conn_latency_ms','db_query_p95_ms','db_pool_usage','dep_5xx_ratio',
+                        'dep_latency_ms','schema_invalid_count','checkpoint_age_sec',
+                        'timeout_count','agent_error_count','restart_count','db_connection_error',
+                        'slow_query_count','schema_error_rate','validation_fail_rate','injection_detect_count',
+                        'circuit_open_count','fallback_ratio'));

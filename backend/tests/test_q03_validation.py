@@ -93,7 +93,7 @@ def test_ambiguous_spec_has_no_amount_and_is_not_counted_as_zero(monkeypatch):
     unit, estimated = settlement.item_price(ambiguous, brand_id=F.BRAND, menu_version=F.MENU_VERSION)
     lines = settlement.compute_lines([{**ambiguous, "estimated_price": estimated, "removed": False}])
 
-    assert (unit, estimated) is not (0, 0)
+    assert (unit, estimated) != (0, 0)
     assert unit is None and estimated is None          # 0 이 아니라 미정
     assert lines[0]["has_undecided"] is True
     assert lines[0]["amount"] == 0                     # 합계에 보태지 않는다

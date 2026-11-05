@@ -5,6 +5,7 @@
 """
 
 import re
+import uuid
 
 from langgraph.types import Send
 
@@ -87,11 +88,13 @@ def batch_node(state: dict) -> dict:
             logging_setup.log("checkpoint_saved", session_id=state["session"]["session_id"],
                               trace_id=state.get("trace_id"), checkpoint="chat_read",
                               resumed=True, events=len(saved))
-            return {"batches": [], "events": saved, "resumed": True,
-                    "service": _pick_service() if _interpreter_ready() else None}
+            service = _pick_service() if _interpreter_ready() else None
+            return {"batches": [], "events": saved, "resumed": True, "service": service,
+                    "plan": _record_plan(state, [], service, resumed=True)}
     if not _interpreter_ready():
         # 규칙 해석은 5초 제한이 없고, 참조 주문이 묶음 경계를 넘어 앞 메시지를 찾아야 한다
-        return {"batches": [{"batch_no": 1, "prev": [], "targets": messages, "use_llm": False}], "service": None}
+        batches = [{"batch_no": 1, "prev": [], "targets": messages, "use_llm": False}]
+        return {"batches": batches, "service": None, "plan": _record_plan(state, batches, None)}
     # 킬 스위치는 분석 1회에 **한 번** 읽는다 — 묶음마다 읽으면 한 분석 안에서 1차 · 규칙이 섞인다
     service = _pick_service()
     # 묶음 크기는 고른 서비스의 모델이 5초 안에 답하는 크기다 (D-12 3.1 · 10.2 실측)
@@ -107,7 +110,35 @@ def batch_node(state: dict) -> dict:
     allowed = config.MAX_LLM_CALLS_PER_RUN // (1 + config.MAX_REGENERATE)
     for batch in batches[allowed:]:
         batch["use_llm"] = False
-    return {"batches": batches, "service": service}
+    return {"batches": batches, "service": service, "plan": _record_plan(state, batches, service)}
+
+
+def _record_plan(state: dict, batches: list[dict], service: str | None, *, resumed: bool = False) -> dict:
+    """처리 계획 (Planner · PRD 5.9.3) — N-02 가 이미 정한 값을 계획 한 장으로 모아 남긴다.
+
+    계획을 바꾸는 판단은 하지 않는다(값은 위 batch_node 가 정했다). 기록만 한다 — 실행 결과와 대조하려고.
+    로그 event 는 17종 고정(D-03 결정 ⑥)이라 새 이름 대신 route_decision 에 stage="plan" 을 단다.
+    `source` 키는 쓰지 않는다 — 분류 결과 route_decision(source=snapshot · chat · reply)과 섞이지 않게.
+    """
+    llm_batches = [b["batch_no"] for b in batches if b.get("use_llm")]
+    rule_batches = [b["batch_no"] for b in batches if not b.get("use_llm")]
+    plan = {
+        "plan_id": "pl_" + uuid.uuid4().hex[:10],
+        "run_source": state.get("source"),
+        "resumed": resumed,                       # True 면 Intake(N-03)를 건너뛰는 계획
+        "service": service,                       # primary · backup · None(규칙)
+        "message_count": len(state.get("messages") or []),
+        "batch_count": len(batches),
+        "llm_batches": llm_batches,
+        "rule_batches": rule_batches,
+        "llm_call_budget": config.MAX_LLM_CALLS_PER_RUN,
+        "max_regenerate": config.MAX_REGENERATE,
+        "done_when": ["every_message_has_event", "schema_valid", "checkpoint_chat_read"],
+    }
+    session = state.get("session") or {}
+    logging_setup.log("route_decision", session_id=session.get("session_id"),
+                      trace_id=state.get("trace_id"), stage="plan", plan=plan)
+    return plan
 
 
 def _person_context(messages: list[dict], targets: list[dict], prev: list[dict]) -> list[dict]:
@@ -155,6 +186,20 @@ def dispatch_batches_edge(state: dict) -> list[Send] | str:
 
 def _interpreter_ready() -> bool:
     return bool(config.ORDER_INTERPRETER_PRIMARY_URL or config.ORDER_INTERPRETER_BACKUP_URL)
+
+
+def _backup_ready() -> bool:
+    """대체 해석 서비스를 지금 쓸 수 있는가 — 주소가 있고 회로가 열려 있지 않다(킬 스위치와 같은 기준)."""
+    if not config.ORDER_INTERPRETER_BACKUP_URL:
+        return False
+    if not config.db_configured():
+        return True
+    try:
+        row = db.fetch_one("SELECT state FROM healing.circuit_state "
+                           " WHERE dependency_key = 'order_interpreter_backup'", role="healing")
+    except Exception:      # noqa: BLE001 — 스위치를 못 읽으면 _pick_service 와 같이 쓸 수 있다고 본다
+        return True
+    return (row or {}).get("state", "up") in ("up", "degraded")
 
 
 def _pick_service() -> str | None:
@@ -226,6 +271,7 @@ def intake_node(state: dict) -> dict:
                 filled = intake.extract_events([m for m in targets if m["message_id"] in missing],
                                                brand_id=session["brand_id"],
                                                menu_version=session["menu_version"])
+                _demote_unsupported(filled, session)
                 logging_setup.log("schema_invalid", level="warning", session_id=session["session_id"],
                                   trace_id=state.get("trace_id"), agent="intake",
                                   detail="missing_events_filled", message_ids=sorted(missing))
@@ -239,6 +285,13 @@ def intake_node(state: dict) -> dict:
             if exc.fault_code == "AGENT_OUTPUT_INVALID":
                 attempts += 1
                 reason = "regenerate_exhausted"
+                if attempts > config.MAX_REGENERATE and service == "primary" and _backup_ready():
+                    # FT-04 대체 모델 재요청 1회 (PRD 5.6 F-5 · FR-026) — 1차 재생성을 다 쓴 묶음만.
+                    # 성공하면 그 묶음은 대체 모델 해석으로, 실패하면 지금처럼 규칙 해석으로 내려간다
+                    logging_setup.log("schema_invalid", level="warning", session_id=session["session_id"],
+                                      trace_id=state.get("trace_id"), agent="intake",
+                                      detail="backup_model_retry", batch_no=batch["batch_no"])
+                    service, attempts = "backup", config.MAX_REGENERATE
                 continue
             reason = exc.fault_code                       # 의존 서비스 장애 — 복구는 장애 대응 층
             break
@@ -250,6 +303,30 @@ def intake_node(state: dict) -> dict:
     degraded = [] if reason == "interpreter_unset" else [
         {"batch_no": batch["batch_no"], "reason": reason, "messages": len(targets)}]
     return {"events": _ordered(events), "llm_calls": calls, "degraded": degraded}
+
+
+def _demote_unsupported(filled: list[dict], session: dict) -> None:
+    """모델이 **빠뜨린** 메시지를 규칙으로 채울 때 — 메뉴 근거가 없는 추가 · 변경은 주문으로 올리지 않는다.
+
+    모델은 주문이 아닌 말의 이벤트를 내지 않는 일이 잦다. 빠뜨렸다는 것 자체가 "주문 아님"에 가까운 신호인데,
+    규칙은 "저도"(참조) · "하나"(수량) · "변경"(변경 말)만 보고 주문으로 읽었다 — "혹시 저도 시켜도 되나요?",
+    "네네 변경 내용까지 확인했습니다~", "ㅋㅋㅋㅋ 저도 고민되네요", "일단 10잔으로 확인되네요"가 전부 확인 질문이
+    되거나 앞 메뉴를 끌어와 잔이 늘었다(2026-11-05 5차 보고 · ORD-0023 실측 13건 중 8건).
+    메뉴판에 걸리는 메뉴 · 특성 · 옵션을 말했거나, 메뉴 이름만 덩그러니 말한 것("나 얼박사!")은 남긴다.
+    """
+    brand_id, menu_version = session["brand_id"], session["menu_version"]
+    for event in filled:
+        if event.get("event_type") not in ("add", "update"):
+            continue
+        signals = {consolidate.menu_signal(i, brand_id=brand_id, menu_version=menu_version)
+                   for i in event.get("items") or []}
+        if signals & {"menu", "trait", "option"}:
+            continue
+        text = event.get("_raw_text") or ""
+        if consolidate._bare_menu(text):
+            continue
+        consolidate._to_ignore(event, text)
+        event["consolidated"] = "llm_skipped_no_menu"
 
 
 def _restore_ids(event: dict, known: set[str]) -> dict:
@@ -659,13 +736,15 @@ def _apply_update(rows: list[dict], event: dict, events: list[dict], index: int,
     tail = _after_instead(raw)
     items = intake.build_items(tail, event["person"]) if tail else event.get("items", [])
     quantity_text = tail or raw
+    brand_id, menu_version = session["brand_id"], session["menu_version"]
     for item in items:
         changed = match_one(item, event, events, index, session)
         options = item.get("options") or {}
         # 사양만 바꾸는 변경 — 문장 속 메뉴 이름은 대상을 가리키는 말이지 바꾸려는 값이 아니다
         spec_only = (event.get("consolidated") in consolidate.SPEC_ONLY
                      or consolidate.points_back(raw))
-        if not spec_only and changed.get("menu_id") and changed["menu_id"] != target.get("menu_id"):
+        if not spec_only and changed.get("menu_id") and changed["menu_id"] != target.get("menu_id") \
+                and (tail or _names_menu(changed["menu_id"], raw, options, brand_id, menu_version)):
             for key in ("menu_id", "menu_name", "candidates", "match_reason", "menu_text", "match_text"):
                 target[key] = changed.get(key)
         if options:
@@ -677,8 +756,35 @@ def _apply_update(rows: list[dict], event: dict, events: list[dict], index: int,
                                            **item["ambiguous_options"]}
         if re.search(r"\d+\s*잔|[한두세네]\s*잔", quantity_text):
             target["quantity"] = item.get("quantity") or target.get("quantity")
+        target["option_words"] = {**(target.get("option_words") or {}), **(item.get("option_words") or {})}
+    # 바꾼 옵션도 처음 만들 때와 같은 검사를 지난다 — 매장에 없는 옵션("오트밀크")은 기타 요청으로 옮긴다.
+    # 빠지면 milk=oat 가 옵션에 남아 규칙 실패(failed)가 되고, 엉뚱한 사이즈 질문에 답해도 반영되지 않았다
+    # (이지은 대리 · 2026-11-05 5차 보고)
+    if set(target.get("options") or {}) - _MENU_OPTION_GROUPS:
+        target.update(sessions._spec_checks(target, brand_id=brand_id, menu_version=menu_version))
     target["_updated_by"] = event["message_id"]
     return True
+
+
+# 메뉴판(DB)이 관리하는 옵션 종류 — 이 밖의 옵션(우유 · 시럽)은 기타 요청으로 옮겨야 한다(11_seed 머리말)
+_MENU_OPTION_GROUPS = {"size", "ice", "shot", "bean", "cup"}
+
+
+def _names_menu(menu_id: str, text: str, options: dict, brand_id: str, menu_version: str) -> bool:
+    """변경 문장이 **그 메뉴를 직접 말했는가** — 말하지 않았으면 메뉴를 바꾸지 않는다 (5차 보고).
+
+    "저도 변경 하나만요~ 우유 오트밀크로 바꿔주세요"가 아이스 카페 라떼를 아메리카노로 바꿨다 — 모델이 남의
+    메시지(아메리카노)를 참조 근거로 달았고, 규칙 해석에서는 "우유"가 메뉴(우유)로 읽혔다. 우유 옵션을 말한
+    문장의 "우유"는 메뉴 이름이 아니다. 온도만 다른 판("라떼" → 아이스 카페 라떼)은 같은 메뉴로 본다.
+    """
+    named = set(menu_service.mentions(brand_id, menu_version, text))
+    catalog = menu_service.catalog(brand_id, menu_version)["by_id"]
+    if "milk" in (options or {}) or intake._options(text).get("milk"):
+        named = {m for m in named if (catalog.get(m) or {}).get("name") != "우유"}
+    if menu_id in named:
+        return True
+    base = consolidate._base_names(brand_id, menu_version, [menu_id])
+    return bool(base & consolidate._base_names(brand_id, menu_version, named))
 
 
 # --- N-07 ------------------------------------------------------------------------------
@@ -842,7 +948,12 @@ def output_guard_node(state: dict) -> dict:
                       matched=sum(1 for r in rows if r.get("menu_id")), items=len(rows),
                       llm_calls=state.get("llm_calls") or 0,
                       degraded=[d["reason"] for d in state.get("degraded") or []],
-                      demoted=guard["demoted"])
+                      demoted=guard["demoted"],
+                      # 처리 계획과 실제 실행의 대조 (PRD 5.9.3) — 계획한 LLM 묶음 중 규칙으로 대체된 수
+                      plan_id=(state.get("plan") or {}).get("plan_id"),
+                      planned_llm_batches=len((state.get("plan") or {}).get("llm_batches") or []),
+                      degraded_batches=len({d.get("batch_no") for d in state.get("degraded") or []
+                                            if d.get("batch_no") is not None}))
     if source == "snapshot":
         with db.transaction() as cur:
             pending = sessions.review_count(session["session_id"])

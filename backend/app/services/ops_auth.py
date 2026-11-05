@@ -20,7 +20,10 @@ def login(password: str) -> dict | None:
     """비밀번호 비교는 서버가 한다. 화면은 받은 토큰만 보관한다 (P-06 O-0)."""
     if not config.OPS_DASHBOARD_PASSWORD:
         return None
-    if not secrets.compare_digest(password or "", config.OPS_DASHBOARD_PASSWORD):
+    # 바이트로 비교한다 — str 끼리면 한글이 섞인 입력에서 TypeError 가 나 500 이 됐다(2026-11-05).
+    # 틀린 비밀번호는 언제나 "틀림"이어야 한다
+    if not secrets.compare_digest((password or "").encode("utf-8"),
+                                  config.OPS_DASHBOARD_PASSWORD.encode("utf-8")):
         return None
     token = secrets.token_urlsafe(24)
     _TOKENS[token] = time.monotonic() + _TTL_SEC

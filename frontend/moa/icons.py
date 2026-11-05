@@ -4,6 +4,8 @@
 # 메뉴 색 견본 · 로고처럼 시안 고유의 그림도 여기에 모은다.
 
 import base64
+import functools
+import pathlib
 
 _STROKE = ('xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
            'stroke="currentColor" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"')
@@ -14,6 +16,8 @@ _PATHS = {
               '<path d="M12 9v4"/><path d="M12 17h.01"/>'),
     "check-circle": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
     "lock": '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    "lock-keyhole": ('<rect width="16" height="11" x="4" y="10.5" rx="3"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'
+                     '<path d="M12 15v2"/>'),
     "file": ('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>'
              '<path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
     "users": ('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>'
@@ -62,6 +66,16 @@ def icon(name: str, size: int = 16, *, width: float = 1.75, cls: str = "moa-ico"
 def _img(svg: str, size: int) -> str:
     return (f'<img src="{_data_uri(svg)}" width="{size}" height="{size}" alt="" '
             f'style="display:block" aria-hidden="true">')
+
+
+@functools.cache
+def wordmark_uri() -> str:
+    """헤더 왼쪽 위 로고 — `moa | the tea time` 워드마크 PNG(2026-11-05 교체, 원본 루트 `moa_the-tea-time_logo.png`).
+
+    높이 64px(헤더 표시 32px의 2배)로 줄여 `moa/assets/`에 두었다. 이미지 파일은 이것 하나다.
+    """
+    data = (pathlib.Path(__file__).parent / "assets" / "moa_logo.png").read_bytes()
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def logo(size: int = 24) -> str:

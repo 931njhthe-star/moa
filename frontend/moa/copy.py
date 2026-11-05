@@ -165,6 +165,9 @@ O0_SUBMIT = "들어가기"
 O0_CANCEL = "취소"
 # 사유를 구분하지 않는다(P-06 O-0 · NFR-003 · D-02 `OPS_AUTH_FAILED`)
 O0_ERROR_FALLBACK = "비밀번호가 맞지 않아요"
+# 서비스 진입 비밀번호 — O-0과 같은 구성 · 같은 비밀번호(OPS_DASHBOARD_PASSWORD)를 쓴다 (2026-11-05 사용자 요청)
+G0_TITLE = "Moa"
+G0_PROMPT = "서비스 비밀번호를 입력해 주세요"
 O6_LOGOUT = "나가기"
 O_ENV_BADGE = "실습 환경"
 O_REFRESH_NOTE = "{at} 갱신 · 5초마다"

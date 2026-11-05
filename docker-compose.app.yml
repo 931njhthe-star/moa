@@ -31,6 +31,7 @@ services:
       - default
       - moa_core
     restart: "no"          # F-3 주입 대상 — 재시작은 healing Recovery Worker 의 허용목록 액션만 (R-14)
+    mem_limit: 384m       # 실측 약 60MB (유휴) — 분석 중 LangGraph · LLM 응답만큼 는다
     healthcheck:
       # slim 이미지에는 curl 이 없어서 파이썬으로 /health 를 확인한다
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -48,6 +49,7 @@ services:
     networks:
       - default
     restart: unless-stopped
+    mem_limit: 256m       # 실측 약 46MB (유휴) — 접속 세션마다 는다
     depends_on:
       backend:
         condition: service_healthy

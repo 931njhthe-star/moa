@@ -29,6 +29,7 @@ services:
       - moa-a_default
       - moa-b_default
     restart: unless-stopped
+    mem_limit: 64m       # 실측 약 14MB
 
   db:
     image: postgres:16
@@ -41,6 +42,7 @@ services:
       - "5432"
     networks: [moa_core]
     restart: unless-stopped
+    mem_limit: 256m       # 실측 약 32MB (유휴)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
@@ -66,6 +68,7 @@ services:
       db:
         condition: service_healthy
     restart: "no"          # F-1 · F-2 · F-5 주입 대상 — Docker 가 먼저 되살리면 복구를 잴 수 없다 (R-14)
+    mem_limit: 192m       # 실측 약 45MB (유휴)
 
   interpreter-backup:
     build: ./backend
@@ -85,6 +88,7 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
+    mem_limit: 192m       # 실측 약 45MB (유휴)
 
   # Docker 소켓 앞의 관문 — 조회 + 허용목록 컨테이너 재시작만 통과 (socket-proxy/haproxy.cfg)
   # healing 만 붙는 내부 네트워크 ctl 에만 둔다 → backend 등 다른 컨테이너는 이 프록시에 닿지 않는다
@@ -98,6 +102,7 @@ services:
       - "2375"
     networks: [ctl]
     restart: unless-stopped
+    mem_limit: 32m       # 실측 약 12MB
 
   # 장애 대응 층 (Monitor · Diagnosis · Recovery Worker · Verification) — PRD 5.2
   # healing 코드가 들어오기 전까지 빈 명령으로 자리만 잡는다 → 코드가 생기면 command 를 ["python", "-m", "healing"] 으로
@@ -122,6 +127,7 @@ services:
       socket-proxy:
         condition: service_started
     restart: unless-stopped
+    mem_limit: 192m       # 코드 들어오면 다시 잰다
 
 networks:
   ctl:

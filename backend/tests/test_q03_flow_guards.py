@@ -343,6 +343,13 @@ def test_docker_control_goes_only_through_the_socket_proxy():
     assert services["healing"]["environment"]["DOCKER_HOST"] == "tcp://socket-proxy:2375"
 
 
+def test_every_container_has_a_memory_limit():
+    """PRD 9.3 — 한 컨테이너가 메모리를 다 써 같은 호스트의 다른 스택까지 죽이지 않게 한다."""
+    services = {**compose(CORE)["services"], **compose(APP)["services"]}
+
+    assert {name for name, svc in services.items() if not svc.get("mem_limit")} == set()
+
+
 def test_dev_overrides_open_ports_only_on_localhost():
     core_dev = compose("docker-compose.core.dev.yml")["services"]
     app_dev = compose("docker-compose.app.dev.yml")["services"]

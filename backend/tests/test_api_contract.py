@@ -560,7 +560,7 @@ def test_share_image_wraps_long_text_instead_of_overflowing():
     from PIL import Image, ImageDraw
 
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    font = share_image._load(share_image.SIZE_REQ)
+    font = share_image._load(share_image._px(12))
     long_korean = "얼음은컵반만채워주시고빨대는빼주시고개인텀블러에담아주세요" * 2
     lines = share_image._wrap(draw, long_korean, font, 400)
     assert len(lines) > 1

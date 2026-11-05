@@ -4,7 +4,7 @@
 #   18 공유 전(같은 메뉴 여러 명 포함) · 19 이름 눌러 바꾸기 · 21 공유 메뉴
 #
 # 배치 — 요약 카드 2칸 + 주문서 묶음 목록 + 합계 한 열.
-#   오른쪽 "단톡방 답장 반영하기"(케이스 20)는 지웠다(2026-11-04 사용자 요청). 바꿀 것은 이름 칩을 눌러 고친다
+#   "단톡방 답장 반영하기"(케이스 20)는 하단 바의 [공유하기] 왼쪽 보조 버튼이다(2026-11-05 사용자 요청)
 #
 # **확정 단계를 두지 않는다**(v3.0). 텍스트 복사 · 이미지 저장을 하면
 # 그 시점에 주문을 완료 처리한다 — 확정 대화상자 · 상태 배지 · [주문 확정] 버튼은 없다.
@@ -173,16 +173,6 @@ def _mark_shared(method: str) -> None:
     st.toast(data.get("user_message", ""))
 
 
-def _share_button() -> None:
-    # 화면의 주 버튼은 이 하나뿐이다 (U-1). 누르면 공유 대화상자가 열린다(케이스 21)
-    if st.button(copy.S5_SHARE, key="share_open", type="primary", disabled=not can_share,
-                 icon=":material/ios_share:"):
-        share = api.get(
-            lambda: api_client.get_share(state.session_id(), "text", session_token=state.token()),
-            fallback=mock.share_text(_preview_case()), label="share")
-        dialogs.share_dialog(share, _mark_shared)
-
-
 # --- 6 단톡방 답장 반영하기 (케이스 20 · 2026-11-05 보고 11번) ----------------
 # 공유한 뒤 단톡방에 온 "나 라떼로 바꿔줘"를 받는 자리다. 붙여넣으면 서버가 분명한 변경은 반영하고
 # 불분명한 것은 확인 질문으로 올린다 — 그 결과를 보려면 주문 정리 화면으로 돌아가야 한다.
@@ -196,10 +186,20 @@ def _after_reply(data: dict) -> None:
     nav.go("review")
 
 
-if not shared:
-    with st.container(key="moa_reply_open"):
-        if st.button(copy.S5_REPLY_OPEN_BUTTON, key="reply_open", icon=":material/forum:"):
-            dialogs.reply_dialog(_after_reply)
+def _share_button() -> None:
+    # [단톡방 답장 반영하기]는 공유하기 바로 왼쪽의 보조 버튼이다(2026-11-05 사용자 요청).
+    # 공유 → 단톡방 답장 → 반영이 한 흐름이라 같은 자리에 둔다. 주 버튼은 여전히 [공유하기] 하나다(U-1)
+    if not shared:
+        with st.container(key="moa_reply_open", width="content"):
+            if st.button(copy.S5_REPLY_OPEN_BUTTON, key="reply_open", icon=":material/forum:"):
+                dialogs.reply_dialog(_after_reply)
+    # 화면의 주 버튼은 이 하나뿐이다 (U-1). 누르면 공유 대화상자가 열린다(케이스 21)
+    if st.button(copy.S5_SHARE, key="share_open", type="primary", disabled=not can_share,
+                 icon=":material/ios_share:"):
+        share = api.get(
+            lambda: api_client.get_share(state.session_id(), "text", session_token=state.token()),
+            fallback=mock.share_text(_preview_case()), label="share")
+        dialogs.share_dialog(share, _mark_shared)
 
 
 # --- 8 하단 바 — [‹ 주문 정리로] + (막는 이유) + [공유하기] ------------------

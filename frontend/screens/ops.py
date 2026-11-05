@@ -30,6 +30,50 @@ _INCIDENT_TONE = {"awaiting_approval": "amber", "recovered": "green", "failed": 
 _ORDER_TONE = {"주문 확정": "green", "공유 완료": "green"}
 
 
+def _normalize_detail(detail: dict) -> dict:
+    """서버 응답 모양을 D-02 API-043 모양으로 맞춘다 (2026-11-05).
+
+    서버(services/incidents.incident_detail)는 `timeline` · `verification` 을 **목록**으로, `attempts` 를
+    최상위로 돌려준다. 화면은 API-043 대로 사전을 기대해 `.get` 에서 AttributeError 가 났다.
+    두 모양을 모두 받는다 — 서버를 바꾸지 않아 다른 호출부에 영향이 없다.
+    """
+    detail = dict(detail)
+    timeline = detail.get("timeline")
+    if isinstance(timeline, list):
+        keys = {"injected": "injected_at", "detected": "detected_at",
+                "recovery_started": "recovery_started_at", "resolved": "resolved_at", "failed": "failed_at"}
+        detail["timeline"] = {keys.get(t.get("key"), t.get("key")): t.get("at_text") for t in timeline}
+    verification = detail.get("verification")
+    if isinstance(verification, list):
+        verdicts = {v.get("verdict") for v in verification if v.get("verdict")}
+        detail["verification"] = {
+            "checks": [{"name": v.get("check_name"), "result": "통과" if v.get("passed") else "미달"}
+                       for v in verification],
+            "verdict": ("실패" if "failed" in verdicts else "통과") if verification else None}
+    recovery = dict(detail.get("recovery") or {})
+    if "attempts" not in recovery and isinstance(detail.get("attempts"), list):
+        recovery["attempts"] = [{"no": a.get("attempt_no"), "action": a.get("action"),
+                                 "wait_ms": a.get("wait_ms"), "result": a.get("result")}
+                                for a in detail["attempts"]]
+        recovery["tool_calls"] = [{"tool": a.get("tool"), "args": a.get("tool_args"), "result": a.get("result")}
+                                  for a in detail["attempts"] if a.get("tool")]
+    if "strategy" not in recovery and detail.get("strategy"):
+        recovery["strategy"] = detail["strategy"]
+    detail["recovery"] = recovery
+    if detail.get("elapsed_sec") is None and isinstance(detail.get("elapsed_ms"), (int, float)):
+        detail["elapsed_sec"] = round(detail["elapsed_ms"] / 1000, 1)
+    return detail
+
+
+def _plan_text(plan) -> str:
+    """복구 계획 한 줄 — 단계 목록이 있으면 순서대로, 없으면 '-'."""
+    if not isinstance(plan, dict):
+        return "-"
+    steps = plan.get("steps") or []
+    names = [s.get("strategy") or s.get("action") or str(s) if isinstance(s, dict) else str(s) for s in steps]
+    return " → ".join(names) if names else "-"
+
+
 def _incident_detail(detail: dict) -> str:
     """O-2 사건 상세 — 타임라인 + 항목(P-06 SCR-006 "O-2 사건 상세").
 
@@ -37,6 +81,7 @@ def _incident_detail(detail: dict) -> str:
     시도 번호 · 대기시간 · 검증 결과를 항목별로 보여준다. **원시 JSON을 그대로 쏟지 않는다.**
     장애 코드 · 지표 이름은 운영자 화면이라 그대로 쓴다(D-02 3.1 — 담당자 화면에는 0건).
     """
+    detail = _normalize_detail(detail)
     timeline = detail.get("timeline") or {}
     detection = detail.get("detection") or {}
     diagnosis = detail.get("diagnosis") or {}
@@ -57,6 +102,8 @@ def _incident_detail(detail: dict) -> str:
                      f' (기준 {detection.get("threshold", "")})'),
         ("진단", f'{diagnosis.get("reason", "")} ({diagnosis.get("source", "")})'),
         ("선택 전략", recovery.get("strategy", "")),
+        # Diagnosis 의 복구 계획 (PRD 5.9.3) — 장애 대응 층이 채우기 전에는 "-"
+        ("복구 계획", _plan_text(detail.get("recovery_plan"))),
         ("복구 시도", attempts or "-"),
         ("회로", f'{circuit.get("state", "-")} · 시험까지 {circuit.get("retry_probe_in_sec", "-")}초'),
         # 복구 도구 호출 인자를 남긴다(PRD 7.2)

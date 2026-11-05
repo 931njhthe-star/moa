@@ -124,6 +124,10 @@ if has_result:
             state.add_chat(item.get("role", "assistant"), item.get("text", ""), kind=item.get("kind"))
         # 주문서에서 답장을 반영하고 돌아온 경우 — 무엇이 일어났는지 알린다(1차 보고 11번 · 3차 보고 6번).
         # 요약 한 줄 + **바뀐 주문마다 한 줄**. 문구는 서버가 만든 것을 그대로 쓴다
+        # 그 앞에 붙여넣은 답장을 내 말로 둔다 — 무엇을 넣어 이 결과가 나왔는지 보이게(4차 보고 2번)
+        if st.session_state.get(state.REPLY_TEXT):
+            state.add_chat("user", st.session_state[state.REPLY_TEXT])
+            st.session_state[state.REPLY_TEXT] = ""
         if st.session_state.get(state.NOTICE):
             state.add_chat("assistant", st.session_state[state.NOTICE])
             st.session_state[state.NOTICE] = None

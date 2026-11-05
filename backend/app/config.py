@@ -55,10 +55,15 @@ def llm_key_present() -> bool:
     return {"openai": bool(OPENAI_API_KEY),
             "anthropic": bool(ANTHROPIC_API_KEY)}.get(LLM_PROVIDER, True)
 
-# 빈 값(`OPS_DASHBOARD_PASSWORD=`)도 기본값으로 본다 — 빈 문자열이면 아무도 로그인하지 못한다
-OPS_DASHBOARD_PASSWORD = (os.getenv("OPS_DASHBOARD_PASSWORD") or "moa-ops").strip()
 ENABLE_DEBUG_API = _bool("ENABLE_DEBUG_API")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "lab").strip()
+
+# 빈 값(`OPS_DASHBOARD_PASSWORD=`)도 기본값으로 본다 — 빈 문자열이면 아무도 로그인하지 못한다.
+# 기본값은 **실습 환경(lab)에서만** 쓴다(PRD R-17 · v1.9). 그 밖의 환경에서 값이 없으면 로그인을 막는다.
+# 기본값을 쓰는 중이면 기동 때 경고를 남긴다(app/main.py)
+_OPS_PASSWORD_ENV = (os.getenv("OPS_DASHBOARD_PASSWORD") or "").strip()
+OPS_PASSWORD_IS_DEFAULT = not _OPS_PASSWORD_ENV and ENVIRONMENT == "lab"
+OPS_DASHBOARD_PASSWORD = _OPS_PASSWORD_ENV or ("moa-ops" if ENVIRONMENT == "lab" else "")
 
 # D-07 7.2 연결 규약 — 값이 코드와 PRD 5.6.1 판정에서 같아야 한다
 CONNECT_TIMEOUT_SEC = 2

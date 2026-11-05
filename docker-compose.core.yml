@@ -63,6 +63,8 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
     expose:
       - "8101"
+    volumes:
+      - ./logs/interpreter-primary:/app/logs   # 로그를 호스트에 — 배포에도 남는다
     networks: [moa_core]
     depends_on:
       db:
@@ -83,6 +85,8 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
     expose:
       - "8102"
+    volumes:
+      - ./logs/interpreter-backup:/app/logs   # 로그를 호스트에 — 배포에도 남는다
     networks: [moa_core]
     depends_on:
       db:
@@ -118,6 +122,8 @@ services:
       # 대상 상태 확인: http://<허용목록 이름>:8000/health (backend 는 moa_core 에서 컨테이너 이름으로 보인다)
       # healing_rw = healing 스키마 R/W · app 스키마 읽기만 (sql/01_roles.sql)
       DATABASE_URL: postgresql://healing_rw:${HEALING_RW_PASSWORD:?이 폴더의 .env 에 HEALING_RW_PASSWORD 를 넣는다 (backend/.env 와 같은 값)}@db:5432/postgres
+    volumes:
+      - ./logs/healing:/app/logs   # 로그를 호스트에 — 사건 증빙 (healing 이 logging_setup 을 쓰면 여기에 쌓인다)
     networks:
       - moa_core
       - ctl

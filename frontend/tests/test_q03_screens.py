@@ -7,6 +7,7 @@
 # 특정 상태에서만 사라져도 예외가 나지 않는다. 사람 눈 대신 렌더 결과를 본다.
 import os
 import pathlib
+import re
 
 import pytest
 
@@ -38,8 +39,13 @@ def app(script, case=None, **session):
 
 
 def html_of(at):
-    """st.html · markdown 으로 나간 문구 전부 — 고지는 html 로 나간다."""
-    return "\n".join([e.body for e in at.markdown] + [getattr(e, "body", "") for e in at.get("html")])
+    """st.html · markdown 으로 나간 문구 전부 — 고지는 html 로 나간다.
+
+    `<style>` 블록은 뺀다 — CSS 주석에 화면 문구가 적혀 있으면("[단톡방 답장 반영하기]" 버튼 스타일 등)
+    화면에 없는 문구가 "있다"로 판정된다. 보이는 문구만 본다.
+    """
+    body = "\n".join([e.body for e in at.markdown] + [getattr(e, "body", "") for e in at.get("html")])
+    return re.sub(r"<style\b.*?</style>", "", body, flags=re.S)
 
 
 # --- TC-101 AI 고지 상시 노출 --------------------------------------------------------------

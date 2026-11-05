@@ -1,0 +1,13 @@
+# 로컬 개발용 덧씌우기 (앱 스택) — 게이트웨이 없이 각 스택을 직접 열어 본다. 배포에서 쓰지 않는다
+#
+#   DEV_FRONT_PORT=8511 DEV_BACK_PORT=8001 docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml -p moa-a up -d
+#   DEV_FRONT_PORT=8512 DEV_BACK_PORT=8002 docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml -p moa-b up -d
+#
+# 127.0.0.1 에만 연다. 8501 은 게이트웨이 자리라 비워 둔다
+services:
+  frontend:
+    ports:
+      - "127.0.0.1:${DEV_FRONT_PORT:?A 는 8511 · B 는 8512}:8501"
+  backend:
+    ports:
+      - "127.0.0.1:${DEV_BACK_PORT:?A 는 8001 · B 는 8002}:8000"

@@ -1,0 +1,81 @@
+# 공용 스택 (프로젝트 moa-core) — PRD 5.4 · 기획서 6절 배포 구성
+#
+# 두 앱 스택(moa-a · moa-b)이 함께 쓰는 서비스를 둔다: db · 주문 해석 서비스 2계통
+#   (gateway · socket-proxy · healing 은 다음 단계에서 이 파일에 더한다)
+#
+#   sh scripts/init-networks.sh                                       처음 한 번 (네트워크 3개)
+#   docker compose -f docker-compose.core.yml -p moa-core up -d       공용 스택을 먼저
+#   docker compose -f docker-compose.app.yml  -p moa-a    up -d       앱 복제본 A
+#   docker compose -f docker-compose.app.yml  -p moa-b    up -d       앱 복제본 B
+#
+# 네트워크는 compose 가 만들지 않고 미리 만든 것을 쓴다(external).
+#   앱 스택 네트워크(moa-a_default · moa-b_default)는 게이트웨이가 공용 스택에서 먼저 붙어야 해서
+#   앱 스택보다 먼저 있어야 한다 — compose 의 depends_on 은 프로젝트를 넘지 못한다
+#
+# 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?이 폴더의 .env 에 POSTGRES_PASSWORD 를 넣는다}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # down -v 금지 — 주문 · 사건 기록이 지워진다
+    expose:
+      - "5432"
+    networks: [moa_core]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 주문 해석 서비스 2계통 — backend 와 같은 이미지, 역할만 다르다. 두 앱 스택이 함께 쓴다
+  interpreter-primary:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8101"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: primary
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}   # llm · rules(장애 실험 반복용)
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    expose:
+      - "8101"
+    networks: [moa_core]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"          # F-1 · F-2 · F-5 주입 대상 — Docker 가 먼저 되살리면 복구를 잴 수 없다 (R-14)
+
+  interpreter-backup:
+    build: ./backend
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["uvicorn", "interpreter.main:app", "--host", "0.0.0.0", "--port", "8102"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      INTERPRETER_ROLE: backup
+      INTERPRETER_SOURCE: ${INTERPRETER_SOURCE:-llm}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+    expose:
+      - "8102"
+    networks: [moa_core]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
+
+networks:
+  moa_core:
+    name: moa_core
+    external: true
+
+volumes:
+  pgdata:
+    # 이름을 고정한다 — 기존 단일 compose(프로젝트 moa)의 볼륨을 그대로 이어 쓴다. 프로젝트 이름이 바뀌어도 새 DB 가 생기지 않는다
+    name: moa_pgdata

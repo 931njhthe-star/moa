@@ -1,5 +1,13 @@
-# CI 워크플로우
-name: CI
+# CI / CD — 커밋 → 정적 검사 · 테스트 → 이미지 빌드 → (main 만) EC2 순차 배포
+#
+#   lint · test-backend · test-frontend   main · dev push 와 그쪽으로 향하는 PR 마다. 실패하면 뒤 단계로 가지 않는다(배포 차단)
+#   build                                 세 검사가 모두 통과하면 backend · frontend 이미지를 빌드해 본다
+#   deploy                                main push 만. ECR push → EC2 에 compose · 설정 · 스크립트 복사 →
+#                                         scripts/deploy.sh 로 순차 교체(공용 → 해석 서비스 → 앱 A → A UP 확인 → 앱 B) → 8501 확인
+#   report-failure                        push 에서 실패하면 GitHub Issue 를 만들어 커밋 작성자에게 할당
+#
+# 배포 구성은 PRD 5.4 — 공용 스택(docker-compose.core.yml) + 앱 스택 A/B(docker-compose.app.yml)
+name: CI / CD
 
 on:
   push:

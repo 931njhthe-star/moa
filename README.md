@@ -204,7 +204,8 @@ cd frontend
 | `EC2_HOST` | EC2 퍼블릭 IP 또는 DNS |
 | `ECR_REGISTRY` | `<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com` (끝에 / 없음) |
 | `EC2_SSH_KEY` | 키 페어 `.pem` 파일 내용 전체 |
+| `EC2_SG_ID` | EC2 보안 그룹 ID (`sg-...`) — 배포 동안만 러너 IP 를 22번에 허용하고 끝나면 지운다 |
 
 SSH 사용자는 기본 `ubuntu` 다. Amazon Linux 등 다른 사용자면 Secrets 가 아니라 **Variables** 에 `EC2_USER` 를 둔다.
 
-EC2 보안 그룹은 GitHub Actions 러너에서 22번 포트로 들어올 수 있어야 한다. 서버 준비(`.env` · `backend/.env` · DB 초기화)는 위 "방법 3" 을 처음 한 번 해 둔다.
+보안 그룹의 22번은 평소처럼 내 IP 만 열어 두면 된다 — 러너 IP 는 워크플로가 열고 닫는다. 그래서 위 IAM 사용자에 `ec2:AuthorizeSecurityGroupIngress` · `ec2:RevokeSecurityGroupIngress` 권한이 있어야 한다. 서버 준비(`.env` · `backend/.env` · DB 초기화)는 위 "방법 3" 을 처음 한 번 해 둔다.

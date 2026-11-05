@@ -27,23 +27,41 @@ def _head(icon_name: str, title: str, sub: str, *, green: bool = False) -> None:
 def open_ops_login() -> None:
     """담당자 화면 헤더 [운영 대시보드] → O-0을 띄운다.
 
-    이미 인증돼 있으면 다시 묻지 않고 바로 들어간다(인증은 브라우저 세션 동안 유지).
+    들어갈 때마다 묻는다 — 서비스 진입 비밀번호를 통과했어도, 전에 운영 대시보드에 들어갔어도
+    다시 받는다(2026-11-05 사용자 요청). 운영 화면 밖에서는 `app.py`가 운영 인증을 버린다.
     """
-    if st.session_state.get(state.OPS_AUTHED):
-        nav.go("ops")
-        return
     st.session_state[state.OPS_ERROR] = None
     ops_login_dialog()
 
 
 def ops_login_form(form_key: str, *, with_cancel: bool) -> tuple[bool, bool, str]:
-    """비밀번호 칸 1개 · 아이디 칸 없음 · Enter로도 제출(P-06 O-0). 단독 화면도 같은 모양이다.
+    """비밀번호 칸 1개 · 아이디 칸 없음 · Enter로도 제출(P-06 O-0). 단독 화면도 같은 모양이다."""
+    return password_form(form_key, title=copy.O0_DIALOG_TITLE, prompt=copy.O0_PROMPT,
+                         error_key=state.OPS_ERROR, with_cancel=with_cancel)
+
+
+def _lock_head(title: str, prompt: str) -> None:
+    """비밀번호 폼 머리 — 왼쪽 초록 그라데이션 자물쇠 배지 · 오른쪽 제목 + 안내(2026-11-05 사용자 요청).
+
+    배지 뒤 원 두 개는 로고의 작은 원(#BFD8C9 · #7FB197)을 따왔다. 장식이라 스크린리더에서 숨긴다.
+    """
+    st.html('<div class="moa-lock-head">'
+            '<div class="moa-lock-badge" aria-hidden="true">'
+            '<span class="moa-lock-dot moa-lock-dot-a"></span><span class="moa-lock-dot moa-lock-dot-b"></span>'
+            f'<span class="moa-lock-core">{icons.icon("lock-keyhole", 22, width=2)}</span></div>'
+            f'<div><div class="moa-lock-title">{_esc(title)}</div>'
+            f'<div class="moa-lock-sub">{_esc(prompt)}</div></div></div>')
+
+
+def password_form(form_key: str, *, title: str, prompt: str, error_key: str,
+                  with_cancel: bool) -> tuple[bool, bool, str]:
+    """O-0 구성의 비밀번호 폼 — 운영 대시보드 · 서비스 진입 게이트가 함께 쓴다.
 
     **입력값을 session_state에 남기지 않는다** — `clear_on_submit`으로 제출 즉시 칸을 비우고,
     읽은 값은 지역 변수로만 쓴다(NFR-003 · P-06 O-0 "틀리면 칸을 비운다").
     """
-    _head("lock", copy.O0_DIALOG_TITLE, copy.O0_PROMPT)
-    error = st.session_state.get(state.OPS_ERROR)
+    _lock_head(title, prompt)
+    error = st.session_state.get(error_key)
     with st.container(key="dlg_ops_err" if error else "dlg_ops_ok"):
         with st.form(form_key, border=False, clear_on_submit=True):
             st.html(f'<div class="moa-field-label">{_esc(copy.O0_LABEL)}</div>')
@@ -67,9 +85,13 @@ def ops_login_form(form_key: str, *, with_cancel: bool) -> tuple[bool, bool, str
     return submitted, cancelled, password
 
 
-@st.dialog(copy.O0_DIALOG_TITLE)
+@st.dialog(copy.O0_DIALOG_TITLE, dismissible=False)
 def ops_login_dialog() -> None:
-    """**틀렸을 때 앱 전체를 다시 실행하지 않는다** — 대화상자가 닫혀 오류 문구를 볼 수 없다."""
+    """**틀렸을 때 앱 전체를 다시 실행하지 않는다** — 대화상자가 닫혀 오류 문구를 볼 수 없다.
+
+    오른쪽 위 X는 두지 않는다(2026-11-05 사용자 요청) — 닫는 길은 [취소] 하나다.
+    `dismissible=False`라 ESC · 바깥 클릭으로도 닫히지 않는다.
+    """
     with st.container(key="dlg_ops"):
         submitted, cancelled, password = ops_login_form("ops_login_form", with_cancel=True)
     if cancelled:
@@ -104,13 +126,47 @@ def try_ops_login(password: str):
     return None
 
 
-def logout_ops() -> None:
-    """[나가기] — 인증을 해제하고 SCR-001로 돌아간다."""
+def try_service_login(password: str):
+    """서비스 진입 게이트 — 운영 대시보드와 **같은 비밀번호**를 서버가 비교한다(API `/api/ops/login`).
+
+    비밀번호 비교는 서버에만 둔다(화면에 비밀번호 값을 두지 않는다 · P-06 O-0).
+    검증용으로 받은 운영 토큰은 바로 돌려준다 — 서비스에 들어왔다고 운영 대시보드가 열리지 않는다.
+    """
+    if not password:
+        st.session_state[state.SERVICE_ERROR] = copy.O0_ERROR_FALLBACK
+        return copy.O0_ERROR_FALLBACK
+    try:
+        data = api_client.ops_login(password)
+    except api_client.ApiError as err:
+        if mock.PREVIEW_ENABLED and isinstance(err, api_client.ApiUnreachable):
+            api.preview_used().add("service_login")
+            data = {}
+        else:
+            message = err.user_message or copy.O0_ERROR_FALLBACK
+            st.session_state[state.SERVICE_ERROR] = message
+            return message
+    if data.get("ops_token"):
+        try:
+            api_client.ops_logout(ops_token=data["ops_token"])
+        except api_client.ApiError:
+            pass  # 반납하지 못해도 토큰은 1시간 뒤 서버에서 만료된다
+    st.session_state[state.SERVICE_AUTHED] = True
+    st.session_state[state.SERVICE_ERROR] = None
+    return None
+
+
+def drop_ops_auth() -> None:
+    """운영 인증 해제 — 서버 토큰을 반납하고 화면의 인증 플래그를 지운다."""
     try:
         api_client.ops_logout(ops_token=st.session_state.get(state.OPS_TOKEN))
     except api_client.ApiError:
         pass  # 서버에 닿지 못해도 화면의 인증 플래그는 반드시 지운다
     state.clear_ops()
+
+
+def logout_ops() -> None:
+    """[나가기] — 인증을 해제하고 SCR-001로 돌아간다."""
+    drop_ops_auth()
     nav.go("start")
 
 
@@ -279,6 +335,8 @@ def reply_dialog(on_analyzed) -> None:
             if not (text or "").strip():
                 st.toast(copy.S5_REPLY_EMPTY)
                 return
+            # 붙여넣은 답장은 주문 정리 채팅에 **내 말**로 남긴다(2026-11-05 4차 보고 2번)
+            st.session_state[state.REPLY_TEXT] = text.strip()
             data = api.act(
                 lambda: api_client.analyze_replies(state.session_id(), text, apply=True,
                                                    session_token=state.token()),

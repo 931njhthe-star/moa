@@ -23,6 +23,7 @@ class RunState(TypedDict, total=False):
     batches: list[dict]               # N-02
     service: str | None               # N-02 가 고른 해석 서비스 — Menu · 보조 검토도 같은 서비스를 쓴다
     resumed: bool                     # N-02 가 Intake 저장본으로 재개했다 — N-03 건너뜀 · N-04 는 다시 저장하지 않는다
+    plan: dict                        # N-02 처리 계획(Planner · PRD 5.9.3) — 실행 결과(degraded)와 대조한다
     # 병렬 결과를 합친다 (reducer)
     events: Annotated[list[dict], operator.add]
     matched: Annotated[list[dict], operator.add]

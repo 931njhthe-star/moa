@@ -69,6 +69,10 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
     `event_type` 과 `route` 를 함께 바꾼다 — N-04 가 둘을 같은 값으로 쓴다.
     버리지 않고 `ignore` 로 바꾼다: 처리 기록 · 근거 보기에서 그 메시지가 사라지지 않게.
     """
+    # 메뉴판에 걸리는 주문이 하나라도 있는 사람 — 그 사람의 "메뉴 이름만 있는 말"은 잡담일 수 있다(보고 7번)
+    orderers = {e.get("person") or "" for e in events if e.get("event_type") == "add"
+                and any(menu_signal(i, brand_id=brand_id, menu_version=menu_version) != "none"
+                        for i in e.get("items") or [])}
     last_add: dict[str, str] = {}          # 사람 -> 그 사람의 마지막 add 메시지 id
     person_menus: dict[str, set[str]] = {}  # 사람 -> 지금까지 주문한 메뉴 id (추가 · 변경 구분용)
     for event in events:
@@ -84,9 +88,21 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
                 continue
             signals = {menu_signal(i, brand_id=brand_id, menu_version=menu_version)
                        for i in event.get("items") or []}
+            if "menu" not in signals and (intake.TALLY.search(text) or _PERMISSION.search(text)):
+                # "일단 10잔으로 확인되네요" · "혹시 저도 시켜도 되나요?" — 집계 · 허락 묻기다(5차 보고).
+                # 메뉴를 말하지 않았으면 주문을 만들지 않는다. 메뉴를 말했으면("저도 라떼 시켜도 되나요") 주문이다
+                _to_ignore(event, text)
+                continue
+            if signals == {"reference"} and person in last_add and not intake.order_pattern(text):
+                # "ㅋㅋㅋㅋ 저도 고민되네요" — 이미 주문한 사람의 "저도"는 참조 주문이 아니라 맞장구다(5차 보고).
+                # 앞 메뉴를 끌어와 한 잔이 늘었다. 한 잔 더라면 "저도 하나 더요"처럼 주문 문형이 붙는다
+                _to_ignore(event, text)
+                continue
             if not signals or signals == {"none"}:
-                if intake.order_pattern(text):
+                if intake.order_pattern(text) or (person not in orderers and _bare_menu(text)):
                     # 주문 문형은 있는데 메뉴를 말하지 않았다 — 버리지 않고 확인 필요로 올린다(보고 2번)
+                    # 메뉴판에 없는 이름만 말했고 그 사람의 다른 주문이 없다("나 얼박사!") — 버리면 그 사람
+                    # 주문이 통째로 사라진다. 확인 필요로 올려 담당자가 고르게 한다(2026-11-05 4차 보고 3번)
                     last_add[person] = event["message_id"]
                     continue
                 _to_ignore(event, text)
@@ -101,6 +117,12 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
             last_add[person] = event["message_id"]
             person_menus.setdefault(person, set()).update(
                 _menus_of(event, brand_id=brand_id, menu_version=menu_version))
+            continue
+
+        if kind == "update" and person not in last_add and _no_menu_signal(event, brand_id, menu_version):
+            # "네네 변경 내용까지 확인했습니다~" — 주문한 적 없는 사람이 메뉴도 사양도 말하지 않은 변경이다(5차 보고).
+            # 바꿀 대상이 없으면 새 주문으로 받으므로(N-06) 메뉴 없는 확인 질문이 떴다
+            _to_ignore(event, text)
             continue
 
         if kind == "update" and _is_one_more(event, text, person_menus.get(person) or set(),
@@ -179,6 +201,37 @@ def _changes_spec(event: dict) -> bool:
 def _said_menu(text: str, brand_id: str, menu_version: str) -> bool:
     hit = menu_service.match(brand_id, menu_version, intake._menu_text(text) or text)
     return bool(hit.get("menu_id") or hit.get("candidates"))
+
+
+# 메뉴 이름 하나만 덩그러니 말한 문장 — "나 얼박사!" · "저는 얼박사요" (2026-11-05 4차 보고 3번).
+# 메뉴판에 없는 이름이라 주문 신호가 없어 보이지만, 단톡방에서 가장 흔한 주문 모양이다
+_BARE_MENU = re.compile(r"^(?:나|난|나는|저|저는|전|내\s*꺼?는?|제\s*꺼?는?)?\s*"
+                        r"(?P<name>[가-힣A-Za-z]{2,10}?)(?:이요|요)?$")
+_NOT_MENU_TAIL = re.compile(r"(?:입니다|이에요|예요|해요|했어|해|다|네|지|죠|까|야|어|아|고|래|음|넵|넹|응|웅|ㅇ|ㅋ|ㅎ)$")
+
+
+def _bare_menu(text: str) -> bool:
+    if "?" in (text or ""):
+        return False          # "얼박사?" — 묻는 말이다
+    body = re.sub(r"[!~.,…^]+", " ", intake._without_filler(text)).strip()
+    hit = _BARE_MENU.match(body)
+    if not hit or _NOT_MENU_TAIL.search(hit.group("name")):
+        return False
+    # 매장 이름만 말한 것("스타벅스!")은 주문이 아니다
+    from app.services import brand as brand_service
+    try:
+        return not brand_service._find(hit.group("name"), brand_service._dictionary())
+    except Exception:       # 매장 사전을 못 읽어도 주문을 버리지 않는 쪽으로 둔다
+        return True
+
+
+# 주문해도 되는지 묻는 말 — 주문이 아니라 허락을 구하는 말이다 (5차 보고 · "혹시 저도 시켜도 되나요?")
+_PERMISSION = re.compile(r"(?:시켜|주문해|마셔|먹어|해)도\s*(?:되|돼|괜찮)")
+
+
+def _no_menu_signal(event: dict, brand_id: str, menu_version: str) -> bool:
+    signals = {menu_signal(i, brand_id=brand_id, menu_version=menu_version) for i in event.get("items") or []}
+    return not signals or signals == {"none"}
 
 
 def _to_ignore(event: dict, text: str) -> None:

@@ -28,9 +28,20 @@ def page_setup() -> None:
     state.init()
 
 
-def _brandmark(extra: str = "") -> str:
-    return (f'<div class="moa-brandmark">{icons.logo(24)}'
-            f'<span class="moa-logo-word">{copy.LOGO_WORD}</span>{extra}</div>')
+def _brandmark(extra: str = "") -> None:
+    """왼쪽 위 로고 + (단계 표시 또는 운영 표시). 로고를 누르면 홈(SCR-001 `/`)으로 간다.
+
+    `st.page_link`라 페이지를 새로 읽지 않는다 — 넣은 대화 · 정리 결과가 그대로 남는다(U-9).
+    로고 그림은 CSS 배경(`--moa-logo-url`)으로 입히고 글자는 화면 읽기용으로만 남긴다.
+    """
+    from moa import nav
+
+    with st.container(key="moa_brand", horizontal=True, vertical_alignment="center",
+                      gap=None, width="content"):
+        with st.container(key="moa_home", width="content"):
+            st.page_link(nav.pages()["start"], label=f"{copy.LOGO_WORD} 홈")
+        if extra:
+            st.html(f'<div class="moa-brandmark">{extra}</div>')
 
 
 def _tabs(page: str) -> str:
@@ -43,7 +54,7 @@ def _tabs(page: str) -> str:
 
 
 def header(brand: dict | None = None, *, ops_mode: bool = False, show_ops_entry: bool = True,
-           ops_login: bool = False) -> None:
+           ops_login: bool = False, gate: bool = False) -> None:
     """헤더 — 왼쪽 로고 + 단계 표시, 오른쪽 매장 기준 근거 · 배지 · [운영 대시보드].
 
     매장 기준은 **텍스트와 배지로만** 보여준다. [변경] 버튼 · 브랜드 목록은 두지 않는다(F-024).
@@ -53,12 +64,16 @@ def header(brand: dict | None = None, *, ops_mode: bool = False, show_ops_entry:
     page = st.session_state.get("_page", "")
     with st.container(key="moa_header", horizontal=True, horizontal_alignment="distribute",
                       vertical_alignment="center"):
+        if gate:
+            # 서비스 진입 게이트 — 로고만 둔다. 단계 표시 · [운영 대시보드]는 들어간 뒤에 나온다
+            _brandmark()
+            return
         if ops_login:
             # 미인증 `/ops` — 운영 머리만 둔다. 갱신 표시 · [나가기]는 들어간 뒤에 나온다
-            st.html(_brandmark(f'<span class="moa-ops-word">{_esc(copy.OPS_ENTRY_BUTTON)}</span>'))
+            _brandmark(f'<span class="moa-ops-word">{_esc(copy.OPS_ENTRY_BUTTON)}</span>')
             return
         if ops_mode:
-            st.html(_brandmark(f'<span class="moa-ops-word">{_esc(copy.OPS_ENTRY_BUTTON)}</span>'))
+            _brandmark(f'<span class="moa-ops-word">{_esc(copy.OPS_ENTRY_BUTTON)}</span>')
             with st.container(horizontal=True, horizontal_alignment="right",
                               vertical_alignment="center", gap="medium", width="content"):
                 _ops_header_note()
@@ -66,7 +81,7 @@ def header(brand: dict | None = None, *, ops_mode: bool = False, show_ops_entry:
                     dialogs.logout_ops()
             return
 
-        st.html(_brandmark(_tabs(page)))
+        _brandmark(_tabs(page))
         with st.container(horizontal=True, horizontal_alignment="right",
                           vertical_alignment="center", gap="small", width="content"):
             if brand:

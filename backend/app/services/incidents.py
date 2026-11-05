@@ -10,14 +10,16 @@
 
 from app import config, db, ids
 
-# P-03 7절 장애 코드 7종 → 화면 문구
+# P-03 7절 장애 코드 7종 + PRD v1.9 2종(AGENT_EXCEPTION · PROMPT_INJECTION) → 화면 문구
 FAULT_LABEL = {
     "DEP_HTTP_5XX": "주문 해석 오류 응답",
     "DEP_TIMEOUT": "응답 지연",
     "WORKER_DOWN": "처리 프로세스 중단",
+    "AGENT_EXCEPTION": "에이전트 실행 예외",
     "AGENT_OUTPUT_INVALID": "잘못된 결과 형식",
     "REPEATED_FAILURE": "반복 장애",
     "DB_UNAVAILABLE": "메뉴 저장소 연결 끊김",
+    "PROMPT_INJECTION": "프롬프트 공격 차단",
     "UNKNOWN": "원인 미확인",
 }
 
@@ -113,6 +115,7 @@ def incident_detail(incident_id: str) -> dict | None:
         "state": row["status"],
         "state_text": row["status_label"] or STATE_LABEL.get(row["status"]),
         "strategy": row["strategy"],
+        "recovery_plan": row.get("recovery_plan"),       # Diagnosis 복구 계획 (PRD 5.9.3) — 칸이 없거나 비면 None
         "timeline": [
             {"key": "injected", "label": "주입", "at_text": _hhmmss(row["injected_at"])},
             {"key": "detected", "label": "탐지", "at_text": _hhmmss(row["detected_at"])},

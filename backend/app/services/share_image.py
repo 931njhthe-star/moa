@@ -19,23 +19,43 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-# --- 크기 · 색 (D-01 디자인스타일가이드 팔레트) -------------------------------
-WIDTH = 720
-PAD = 28                      # 카드 바깥 여백
-INNER = 32                    # 카드 안쪽 여백
-RADIUS = 28
+# --- 크기 · 색 — **공유하기 미리보기(화면)와 같은 디자인**이다 (2026-11-05 사용자 요청) ----------
+# 미리보기: frontend/moa/components.share_card_html + tokens.py `.moa-share-*`. 그 CSS 값(px)을 SCALE 배로 그린다.
+# 한쪽을 고치면 다른 쪽도 고친다 — 담당자는 미리보기를 보고 저장하므로 둘이 다르면 "본 것과 받은 것"이 어긋난다.
+SCALE = 2
+CARD_W = 480                  # 미리보기 카드 폭(공유 대화상자 540px - 안쪽 여백)
+WIDTH = CARD_W * SCALE
+RADIUS = 14 * SCALE
 
-PAGE_BG = "#F7F3EC"
-CARD_BG = "#FFFFFF"
-INK = "#3B2A20"               # 본문
-MUTED = "#8A7A6D"             # 보조
-FAINT = "#B3A596"             # 꼬리말
-RULE = "#EDE4D8"              # 구분선
-DOT = "#CDB394"               # 메뉴 점
+GREEN_DEEP = "#1E4D3A"        # --moa-green-deep  머리 띠
+GREEN_MINT = "#A9D3BE"        # --moa-green-mint  머리 부제
+SUNKEN = "#F8F8F7"            # --moa-sunken      본문 바탕
+LINE = "#EAEAE7"              # --moa-line        테두리 · 합계 위 선
+INK = "#18181B"               # --moa-ink
+MUTED = "#6A6A70"             # --moa-muted       이름 · 요청
+MUTED_2 = "#8B8B91"           # --moa-muted-2     금액 고지
+MUTED_3 = "#97979D"           # --moa-muted-3     꼬리말
+WHITE = "#FFFFFF"
+HEAD_DOTS = ("#3B2A20", "#E9D9B8", "#A9D3BE")
 
-SIZE_HEAD, SIZE_SUB = 30, 21
-SIZE_MENU, SIZE_PEOPLE, SIZE_REQ = 26, 21, 19
-SIZE_TOTAL, SIZE_NOTE, SIZE_FOOT = 27, 19, 19
+# 메뉴 점 색 — frontend/moa/icons.py `_SWATCH` · `swatch_color` 와 같은 규칙 · 같은 값
+_SWATCH = [
+    ("유자", "#E8D27A"), ("민트", "#A9D3BE"), ("자바", "#6B4A36"), ("바닐라", "#E9D9B8"),
+    ("라떼", "#CDB394"), ("모카", "#6B4A36"), ("카라멜", "#D9B98A"), ("아메리카노", "#3B2A20"),
+    ("콜드 브루", "#3B2A20"), ("에스프레소", "#3B2A20"), ("티", "#E8D27A"), ("에이드", "#E8D27A"),
+]
+SWATCH_UNKNOWN, SWATCH_DEFAULT = "#ECECE9", "#CDB394"
+
+
+def swatch_color(menu_name: str | None) -> str:
+    if not menu_name:
+        return SWATCH_UNKNOWN
+    return next((color for word, color in _SWATCH if word in menu_name), SWATCH_DEFAULT)
+
+
+def _px(value: float) -> int:
+    return int(round(value * SCALE))
+
 
 # 찾아볼 한글 폰트 — (보통, 굵게). 앞에서부터 처음 있는 짝을 쓴다.
 # 번들 폰트가 없는 개발 PC 에서도 실습이 되도록 OS 기본 한글 폰트를 함께 본다.
@@ -139,77 +159,95 @@ def _wrap(draw, text: str, font, limit: int) -> list[str]:
 
 
 def render(card: dict) -> bytes:
-    """공유 카드 1종을 PNG 바이트로. 세로 길이는 내용에 맞춰 늘어난다."""
+    """공유 카드 1종을 PNG 바이트로 — 미리보기와 같은 배치. 세로 길이는 내용에 맞춰 늘어난다.
+
+    배치(CSS px · SCALE 배)
+      머리  초록 띠 · 안쪽 18/22 · 제목 16px 굵게(흰색) · 부제 12px(민트) · 오른쪽 겹친 점 3개(16px)
+      본문  연회색 바탕 · 안쪽 14/22 · 메뉴 줄(위아래 6) = [색 점 8px] 메뉴 14px 굵게 ··· ×수량
+            이름 12.5px · 요청 12px · 합계 위 선(위 여백 10 · 안쪽 12) · 고지 11.5px · 꼬리말 11px(위 12)
+    """
     fonts = {
-        "head": _load(SIZE_HEAD, bold=True), "sub": _load(SIZE_SUB),
-        "menu": _load(SIZE_MENU, bold=True),
-        "people": _load(SIZE_PEOPLE), "req": _load(SIZE_REQ),
-        "total": _load(SIZE_TOTAL, bold=True), "note": _load(SIZE_NOTE),
-        "foot": _load(SIZE_FOOT),
+        "head": _load(_px(16), bold=True), "sub": _load(_px(12)),
+        "menu": _load(_px(14), bold=True), "people": _load(_px(12.5)), "req": _load(_px(12), bold=True),
+        "total": _load(_px(14), bold=True), "note": _load(_px(11.5)), "foot": _load(_px(11)),
     }
-    # 1) 자리 계산을 먼저 한다 — 높이를 알아야 캔버스를 만들 수 있다
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    text_left = PAD + INNER + 26                 # 메뉴 점 자리만큼 들여쓴다
-    right = WIDTH - PAD - INNER
-    text_width = right - text_left
-    qty_width = 72
+    left, right = _px(22), WIDTH - _px(22)
+    text_left = left + _px(8 + 8)                 # 색 점 8px + 간격 8px
+    qty_width = _px(48)
 
     blocks = []
     for line in card.get("lines", []):
-        menu = _wrap(probe, line.get("menu_text") or "", fonts["menu"], text_width - qty_width)
-        people = _wrap(probe, " · ".join(line.get("people") or []), fonts["people"], text_width)
-        request = (_wrap(probe, f'요청: {line["custom_request"]}', fonts["req"], text_width)
+        menu = _wrap(probe, line.get("menu_text") or "", fonts["menu"], right - text_left - qty_width)
+        people = _wrap(probe, " · ".join(line.get("people") or []), fonts["people"], right - left)
+        request = (_wrap(probe, f'요청: {line["custom_request"]}', fonts["req"], right - left)
                    if line.get("custom_request") else [])
-        blocks.append((menu, people, request, f'×{line.get("quantity", 0)}'))
+        blocks.append((line.get("menu_text"), menu, people, request, f'×{line.get("quantity", 0)}'))
+    note_lines = _wrap(probe, card.get("notice") or "", fonts["note"], right - left)
+    foot_lines = _wrap(probe, card.get("foot") or "", fonts["foot"], right - left)
 
-    note_lines = _wrap(probe, card.get("notice") or "", fonts["note"], text_width)
+    # 1) 높이 — 줄 높이(line-height) 단위로 쌓는다
+    head_h = _px(18) + _px(22) + _px(26) + _px(18)    # 부제 줄은 브라우저에서 26px 로 잡힌다(실측)
+    body_h = _px(14)
+    for _, menu, people, request, _ in blocks:
+        body_h += _px(6) + len(menu) * _px(20) + len(people) * _px(18) + len(request) * _px(18) + _px(6)
+    body_h += _px(10) + _px(12) + _px(20) + len(note_lines) * _px(16)
+    body_h += _px(12) + len(foot_lines) * _px(16) + _px(14)
+    height = head_h + body_h
 
-    height = PAD + INNER + SIZE_HEAD + 12 + SIZE_SUB + 24
-    for menu, people, request, _ in blocks:
-        height += 18 + len(menu) * (SIZE_MENU + 8) + len(people) * (SIZE_PEOPLE + 6) \
-            + len(request) * (SIZE_REQ + 5)
-    height += 14 + SIZE_TOTAL + 10 + len(note_lines) * (SIZE_NOTE + 5)
-    height += 18 + SIZE_FOOT + INNER + PAD
-
-    # 2) 그린다
-    image = Image.new("RGB", (WIDTH, int(height)), PAGE_BG)
+    # 2) 그린다 — 둥근 카드(테두리 1px) 안에 머리 띠와 본문
+    image = Image.new("RGB", (WIDTH, height), WHITE)
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((PAD, PAD, WIDTH - PAD, height - PAD), radius=RADIUS, fill=CARD_BG)
+    border = max(1, SCALE // 2)
+    draw.rounded_rectangle((0, 0, WIDTH - 1, height - 1), radius=RADIUS, fill=SUNKEN, outline=LINE, width=border)
+    draw.rounded_rectangle((border, border, WIDTH - 1 - border, head_h + RADIUS), radius=RADIUS - border,
+                           fill=GREEN_DEEP)
+    draw.rectangle((border, head_h, WIDTH - 1 - border, head_h + RADIUS), fill=SUNKEN)
 
-    y = PAD + INNER
-    draw.text((PAD + INNER, y), card.get("head") or "", font=fonts["head"], fill=INK)
-    y += SIZE_HEAD + 12
-    draw.text((PAD + INNER, y), card.get("sub") or "", font=fonts["sub"], fill=MUTED)
-    y += SIZE_SUB + 24
+    y = _px(18)
+    draw.text((left, y + _px(11)), card.get("head") or "", font=fonts["head"], fill=WHITE, anchor="lm")
+    y += _px(22)
+    draw.text((left, y + _px(13)), card.get("sub") or "", font=fonts["sub"], fill=GREEN_MINT, anchor="lm")
+    # 겹친 점 3개 — 지름 16 · 테두리 1.5(머리 띠 색) · 왼쪽으로 5 겹친다
+    dot, ring, overlap = _px(16), _px(1.5), _px(5)
+    cy = head_h // 2
+    x = right - dot * 3 + overlap * 2
+    for color in HEAD_DOTS:
+        draw.ellipse((x, cy - dot // 2, x + dot, cy + dot // 2), fill=color, outline=GREEN_DEEP, width=ring)
+        x += dot - overlap
 
-    for menu, people, request, qty in blocks:
-        draw.line((PAD + INNER, y, right, y), fill=RULE, width=1)
-        y += 18
-        dot_y = y + SIZE_MENU // 2 - 6
-        draw.ellipse((PAD + INNER, dot_y, PAD + INNER + 12, dot_y + 12), fill=DOT)
+    y = head_h + _px(14)
+    for name, menu, people, request, qty in blocks:
+        y += _px(6)
+        mid = y + _px(10)
+        draw.ellipse((left, mid - _px(4), left + _px(8), mid + _px(4)), fill=swatch_color(name))
         for index, text in enumerate(menu):
-            draw.text((text_left, y), text, font=fonts["menu"], fill=INK)
+            draw.text((text_left, y + _px(10)), text, font=fonts["menu"], fill=INK, anchor="lm")
             if index == 0:
-                draw.text((right, y), qty, font=fonts["menu"], fill=INK, anchor="ra")
-            y += SIZE_MENU + 8
+                draw.text((right, y + _px(10)), qty, font=fonts["menu"], fill=INK, anchor="rm")
+            y += _px(20)
         for text in people:
-            draw.text((text_left, y), text, font=fonts["people"], fill=MUTED)
-            y += SIZE_PEOPLE + 6
+            draw.text((left, y + _px(9)), text, font=fonts["people"], fill=MUTED, anchor="lm")
+            y += _px(18)
         for text in request:
-            draw.text((text_left, y), text, font=fonts["req"], fill=MUTED)
-            y += SIZE_REQ + 5
+            draw.text((left, y + _px(9)), text, font=fonts["req"], fill=INK, anchor="lm")
+            y += _px(18)
+        y += _px(6)
 
-    draw.line((PAD + INNER, y, right, y), fill=RULE, width=1)
-    y += 14
+    y += _px(10)
+    draw.line((left, y, right, y), fill=LINE, width=border)
+    y += _px(12)
     label, _, value = (card.get("total_text") or "").partition(" ")
-    draw.text((PAD + INNER, y), label, font=fonts["total"], fill=INK)
-    draw.text((right, y), value, font=fonts["total"], fill=INK, anchor="ra")
-    y += SIZE_TOTAL + 10
+    draw.text((left, y + _px(10)), label, font=fonts["total"], fill=INK, anchor="lm")
+    draw.text((right, y + _px(10)), value, font=fonts["total"], fill=INK, anchor="rm")
+    y += _px(20)
     for text in note_lines:
-        draw.text((PAD + INNER, y), text, font=fonts["note"], fill=MUTED)
-        y += SIZE_NOTE + 5
-    y += 18
-    draw.text((PAD + INNER, y), card.get("foot") or "", font=fonts["foot"], fill=FAINT)
+        draw.text((left, y + _px(8)), text, font=fonts["note"], fill=MUTED_2, anchor="lm")
+        y += _px(16)
+    y += _px(12)
+    for text in foot_lines:
+        draw.text((left, y + _px(8)), text, font=fonts["foot"], fill=MUTED_3, anchor="lm")
+        y += _px(16)
 
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)

@@ -42,7 +42,9 @@ FROM app.order_session s;
 CREATE OR REPLACE VIEW healing.v_metrics AS
 SELECT
   AVG(EXTRACT(EPOCH FROM (i.detected_at - f.injected_at)))                       AS mttd_sec,
-  AVG(EXTRACT(EPOCH FROM (i.resolved_at - i.detected_at)) - i.paused_ms / 1000.0) AS mttr_sec,
+  -- MTTR 은 PRD SC-3 정의(recovered_at - injected_at)를 따른다 (v1.9 · R-20). 주입 시각이 없으면 탐지 시각부터
+  AVG(EXTRACT(EPOCH FROM (i.resolved_at - COALESCE(i.injected_at, f.injected_at, i.detected_at))))
+                                                                                  AS mttr_sec,
   AVG(CASE WHEN i.status = 'recovered' THEN 1.0 ELSE 0.0 END)
     FILTER (WHERE i.is_false_positive = false)                                    AS recovery_success_rate,
   COUNT(*) FILTER (WHERE i.escalated_at IS NOT NULL)                              AS escalation_count,
@@ -50,7 +52,9 @@ SELECT
     / NULLIF(COUNT(*), 0)                                                         AS false_positive_rate,
   AVG((SELECT COUNT(*) FROM healing.recovery_attempt a
         WHERE a.incident_id = i.incident_id))                                     AS avg_attempts,
-  COUNT(*)                                                                        AS incident_count
+  COUNT(*)                                                                        AS incident_count,
+  -- 종전 MTTR(탐지 ~ 정상화, 승인 대기 제외)은 참고용 — CREATE OR REPLACE VIEW 는 새 칸을 끝에만 붙일 수 있다
+  AVG(EXTRACT(EPOCH FROM (i.resolved_at - i.detected_at)) - i.paused_ms / 1000.0) AS mttr_excl_pause_sec
 FROM healing.incident i
 LEFT JOIN healing.fault_injection f ON f.incident_id = i.incident_id
 WHERE i.is_verification_run = false;        -- 검증용 실행 제외

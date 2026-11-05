@@ -394,8 +394,12 @@ def option_label(brand_id: str, menu_version: str, group: str, value: str) -> st
     return str(value)
 
 
-def search(brand_id: str, menu_version: str, query: str, limit: int = 20) -> list[dict]:
-    """메뉴 찾기 모달 (API-026). 세션 기준 메뉴만 보인다 (FR-004)."""
+def search(brand_id: str, menu_version: str, query: str, limit: int | None = None) -> list[dict]:
+    """메뉴 찾기 모달 (API-026). 세션 기준 메뉴만 보인다 (FR-004).
+
+    기본은 **전부** 돌려준다 — 20개로 자르니 [다른 메뉴]에서 스타벅스 72종 중 20종만 보였다(2026-11-05 5차 보고).
+    모달 목록은 고정 높이 안에서 스크롤된다. 툴 호출(menu_tools)처럼 LLM 에 넘기는 곳만 limit 을 준다
+    """
     cat = catalog(brand_id, menu_version)
     key = normalize(query)
     hits = []
@@ -406,7 +410,7 @@ def search(brand_id: str, menu_version: str, query: str, limit: int = 20) -> lis
         if any(key in alias_key and menu["menu_id"] in ids
                for alias_key, ids in cat["alias_index"].items()):
             hits.append(menu)
-    return [_hit(cat, m["menu_id"]) for m in hits[:limit]]
+    return [_hit(cat, m["menu_id"]) for m in (hits if limit is None else hits[:limit])]
 
 
 def search_view(brand_id: str, menu_version: str, query: str) -> dict:

@@ -35,6 +35,8 @@ OPS_ERROR = "ops_error"
 OPS_ORDER_OPEN = "ops_order_open"     # O-6 펼친 주문
 OPS_INCIDENT_OPEN = "ops_incident_open"  # O-1에서 펼친 사건 (O-2)
 OPS_RETURN = "ops_return"             # O-0을 띄운 화면 (취소하면 그대로 돌아간다)
+SERVICE_AUTHED = "service_authed"     # 서비스 진입 비밀번호 통과 여부 (app.py 진입 게이트)
+SERVICE_ERROR = "service_error"
 
 _DEFAULTS = {
     RAW_TEXT: "",
@@ -65,6 +67,8 @@ _DEFAULTS = {
     OPS_ORDER_OPEN: None,
     OPS_INCIDENT_OPEN: None,
     OPS_RETURN: None,
+    SERVICE_AUTHED: False,
+    SERVICE_ERROR: None,
 }
 
 

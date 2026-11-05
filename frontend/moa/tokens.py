@@ -201,6 +201,19 @@ header[data-testid="stHeader"] { display: none; }
   align-items: center; flex-wrap: nowrap; gap: 10px; margin-bottom: 12px;
 }
 .moa-brandmark { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+/* 왼쪽 위 로고 = 홈 링크 (2026-11-05). 그림은 inject()가 넣는 --moa-logo-url, 글자는 화면 읽기용 */
+.st-key-moa_brand { gap: 0 !important; align-items: center; flex-wrap: nowrap; }
+.st-key-moa_home [data-testid="stPageLink"] { margin: 0; }
+.st-key-moa_home a {
+  display: block !important; width: 193px; height: 32px; padding: 0 !important; margin: 0 6px 0 0;
+  background: var(--moa-logo-url) left center / contain no-repeat !important;
+  border-radius: 6px; cursor: pointer;
+}
+.st-key-moa_home a:hover { background-color: transparent !important; opacity: 0.85; }
+.st-key-moa_home a:focus-visible { outline: 2px solid var(--moa-green); outline-offset: 2px; }
+.st-key-moa_home a > * {
+  position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+}
 .moa-logo-word { font: 800 18px/24px var(--moa-font); letter-spacing: -0.04em; color: var(--moa-ink); }
 .moa-logo-slash { font: 300 16px/24px var(--moa-font); color: var(--moa-slash); margin: 0 6px 0 3px; }
 .moa-ops-word { font: 600 13px/20px var(--moa-font); color: var(--moa-muted); margin-left: 4px; }
@@ -254,6 +267,11 @@ header[data-testid="stHeader"] { display: none; }
 .st-key-moa_bar_right { align-items: center; flex-wrap: nowrap; gap: 12px; }
 .st-key-moa_bar .stButton button[kind="primary"], .st-key-moa_bar .stButton button:disabled {
   min-height: 42px; height: 42px; padding: 0 26px; border-radius: 12px; font: 700 15px/20px var(--moa-font);
+}
+/* 주 버튼 옆 보조 버튼 — [단톡방 답장 반영하기]. 주 버튼과 같은 높이 · 둥글기, 흰 바탕 + 테두리로 위계만 낮춘다 */
+.st-key-moa_bar .st-key-moa_reply_open .stButton button {
+  min-height: 42px; height: 42px; padding: 0 18px; border-radius: 12px; font: 600 15px/20px var(--moa-font);
+  white-space: nowrap;
 }
 .moa-barhint { font: 400 13px/20px var(--moa-font); color: var(--moa-muted-2); white-space: nowrap; }
 .moa-barhint-warn { color: var(--moa-amber-text); font-weight: 600; }
@@ -605,6 +623,7 @@ header[data-testid="stHeader"] { display: none; }
   align-self: flex-end; max-width: 80%; width: fit-content; margin-left: auto;
   background: var(--moa-green-soft); border-radius: 14px; padding: 9px 16px;
   font: 500 14.5px/21px var(--moa-font); color: var(--moa-green-ink);
+  white-space: pre-line;   /* 붙여넣은 답장 대화(여러 줄)를 줄 그대로 보인다 (2026-11-05 4차 보고 2번) */
 }
 .moa-progress-line { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 .moa-progress-line b { font: 700 14px/20px var(--moa-font); color: var(--moa-ink); }
@@ -733,11 +752,15 @@ header[data-testid="stHeader"] { display: none; }
 .moa-share-top span { display: inline-flex; align-items: center; gap: 8px; }
 .moa-share-dot { width: 8px; height: 8px; border-radius: 4px; display: inline-block; }
 .moa-share-people { font: 400 12.5px/18px var(--moa-font); color: var(--moa-muted); }
-.moa-share-req { font: 400 12px/18px var(--moa-font); color: var(--moa-muted); }
+.moa-share-req { font: 700 12px/18px var(--moa-font); color: var(--moa-ink); }  /* 요청사항은 굵게 · 진하게 (2026-11-05 사용자 요청) */
 .moa-share-total { border-top: 1px solid var(--moa-line); margin-top: 10px; padding-top: 12px; }
 .moa-share-total .moa-share-top { font-size: 14px; }
 .moa-share-note { font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
 .moa-share-foot { font: 400 11px/16px var(--moa-font); color: var(--moa-muted-3); margin-top: 12px; }
+/* 답장 반영 팝업 — [바뀐 주문 찾기]는 오른쪽 아래 (2026-11-05 4차 보고 1번) */
+.st-key-dlg_reply [data-testid="stForm"] { border: none; padding: 0; }
+/*   버튼을 감싼 element-container 가 내용 폭이라, 세로 flex 안에서 그 상자를 오른쪽 끝으로 붙인다 */
+.st-key-dlg_reply [class*="st-key-FormSubmitter-reply_form"] { align-self: flex-end; }
 .st-key-dlg_share_btns { flex-wrap: nowrap; gap: 10px; }
 .st-key-dlg_share_btns > div { flex: 1 1 0; }
 .st-key-dlg_share_btns .stButton button, .st-key-dlg_share_btns .stDownloadButton button { width: 100%; min-height: 52px; border-radius: 12px; font-size: 15px; }
@@ -811,8 +834,36 @@ header[data-testid="stHeader"] { display: none; }
 .moa-fault-title { font: 700 15px/22px var(--moa-font); color: var(--moa-ink); white-space: nowrap; }
 .moa-fault-title span { font: 400 12.5px/18px var(--moa-font); color: var(--moa-muted-3); margin-left: 8px; }
 .st-key-moa_fault_ask { background: var(--moa-amber-card); border: 1px solid var(--moa-amber-line); border-radius: 12px; padding: 14px 18px; flex-wrap: nowrap; align-items: center; gap: 10px; }
-.st-key-moa_ops_login { max-width: 420px; margin: 64px auto 0; background: var(--moa-surface); border: 1px solid var(--moa-line); border-radius: 16px; padding: 24px; }
-.st-key-moa_ops_login [data-testid="stForm"] { border: none; padding: 0; }
+.st-key-moa_ops_login, .st-key-moa_service_login { max-width: 420px; margin: 64px auto 0; background: var(--moa-surface); border: 1px solid var(--moa-line); border-radius: 16px; padding: 24px; }
+.st-key-moa_ops_login [data-testid="stForm"], .st-key-moa_service_login [data-testid="stForm"] { border: none; padding: 0; }
+.st-key-moa_ops_login, .st-key-moa_service_login {
+  padding: 32px 28px 28px; border-color: #ECEDEA;
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 18px 40px -18px rgba(30, 77, 58, 0.22);
+}
+/* 비밀번호 폼 머리 — 그라데이션 자물쇠 배지 (2026-11-05). 게이트 · O-0 단독 화면 · O-0 대화상자 공통 */
+.moa-lock-head { display: flex; flex-direction: row; align-items: center; gap: 14px; text-align: left; margin: 0 0 6px; }
+.moa-lock-badge { position: relative; flex: none; width: 62px; height: 62px; display: grid; place-items: center; margin-left: -6px; }
+.moa-lock-badge::before {
+  content: ""; position: absolute; inset: 6px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(127, 177, 151, 0.30) 0%, rgba(127, 177, 151, 0) 70%);
+  animation: moa-lock-glow 3.2s ease-in-out infinite;
+}
+.moa-lock-core {
+  position: relative; width: 48px; height: 48px; border-radius: 16px;
+  display: grid; place-items: center; color: #FFFFFF;
+  background: linear-gradient(145deg, #4C9A74 0%, var(--moa-green) 48%, var(--moa-green-deep) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -2px 6px rgba(0, 0, 0, 0.12),
+              0 10px 22px -8px rgba(30, 77, 58, 0.55);
+  animation: moa-lock-float 3.2s ease-in-out infinite;
+}
+.moa-lock-dot { position: absolute; border-radius: 50%; }
+.moa-lock-dot-a { width: 10px; height: 10px; top: 2px; left: 2px; background: #BFD8C9; }
+.moa-lock-dot-b { width: 7px; height: 7px; top: 0; right: 6px; background: #7FB197; }
+.moa-lock-title { font: 800 19px/26px var(--moa-font); letter-spacing: -0.03em; color: var(--moa-ink); }
+.moa-lock-sub { margin-top: 2px; font: 500 14px/20px var(--moa-font); color: var(--moa-muted); }
+@keyframes moa-lock-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes moa-lock-glow { 0%, 100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.12); opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .moa-lock-core, .moa-lock-badge::before { animation: none; } }
 
 
 /* 가로 배치의 폭은 Streamlit이 감싼 래퍼에 준다 — 안쪽 블록은 세로 플렉스라 flex 값이 높이가 된다 */
@@ -863,4 +914,7 @@ FONT_IMPORT = ('@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard'
 
 def inject() -> None:
     """토큰과 컴포넌트 CSS를 주입한다. 토큰은 `:root` 한 곳에 모으고 컴포넌트는 변수만 참조한다."""
-    st.html(f"<style>{FONT_IMPORT}{ROOT_CSS}{COMPONENT_CSS}</style>")
+    from moa import icons
+
+    logo = f':root {{ --moa-logo-url: url("{icons.wordmark_uri()}"); }}'
+    st.html(f"<style>{FONT_IMPORT}{ROOT_CSS}{logo}{COMPONENT_CSS}</style>")

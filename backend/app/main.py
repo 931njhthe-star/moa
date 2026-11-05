@@ -22,6 +22,9 @@ from app.api import debug, health, intake, ops, order, review
 from app.services import history
 
 logging_setup.setup()
+if config.OPS_PASSWORD_IS_DEFAULT:
+    # PRD R-17 — 기본 비밀번호는 실습용이다. 배포 전에 .env 의 OPS_DASHBOARD_PASSWORD 를 12자 이상으로 채운다
+    logging_setup.log("ops_login", level="warning", detail="default_password_in_use")
 
 app = FastAPI(title="Moa 에이전트 서버", version=health.VERSION,
               description="단톡방 대화 → 사람별 주문 정리. 호출 계약은 D-02 API스펙")

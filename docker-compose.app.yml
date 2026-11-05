@@ -27,6 +27,8 @@ services:
       ORDER_INTERPRETER_PRIMARY_URL: http://interpreter-primary:8101
       ORDER_INTERPRETER_BACKUP_URL: http://interpreter-backup:8102
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?이 폴더의 .env 에 POSTGRES_PASSWORD 를 넣는다}@db:5432/postgres
+    volumes:
+      - ./logs/${COMPOSE_PROJECT_NAME}-backend:/app/logs   # 로그를 호스트에 — 배포(컨테이너 재생성)에도 남는다. ~/moa/logs/moa-a-backend/service.log
     networks:
       - default
       - moa_core

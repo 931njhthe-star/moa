@@ -8,3 +8,5 @@ __pycache__/
 *.pem
 # IAM 콘솔에서 내려받은 액세스 키 파일 (<사용자명>_accessKeys.csv)
 *accessKeys.csv
+# 컨테이너 로그를 호스트에 남기는 폴더 (docker-compose 의 ./logs/<컨테이너>)
+logs/

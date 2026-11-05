@@ -350,6 +350,23 @@ def test_every_container_has_a_memory_limit():
     assert {name for name, svc in services.items() if not svc.get("mem_limit")} == set()
 
 
+def test_logs_survive_container_recreation():
+    """PRD 9.3 로그 14일 — 배포가 컨테이너를 다시 만들어도 로그가 남게 호스트 폴더에 마운트한다."""
+    core, app = compose(CORE)["services"], compose(APP)["services"]
+
+    for svc in (app["backend"], core["interpreter-primary"], core["interpreter-backup"], core["healing"]):
+        assert any(v.startswith("./logs/") and v.split(":")[1] == "/app/logs" for v in svc.get("volumes", []))
+    assert "${COMPOSE_PROJECT_NAME}" in next(v for v in app["backend"]["volumes"] if "/app/logs" in v)  # A · B 따로
+
+
+def test_log_files_rotate_daily_and_keep_14_days(tmp_path):
+    from app import logging_setup
+
+    handler = logging_setup._daily_file(tmp_path / "service.log")
+    assert handler.when == "MIDNIGHT" and handler.backupCount == 14 and handler.utc
+    handler.close()
+
+
 def test_dev_overrides_open_ports_only_on_localhost():
     core_dev = compose("docker-compose.core.dev.yml")["services"]
     app_dev = compose("docker-compose.app.dev.yml")["services"]

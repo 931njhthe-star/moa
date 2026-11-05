@@ -6,6 +6,7 @@ event 이름을 즉흥으로 늘리면 집계가 깨진다.
 
 import json
 import logging
+import logging.handlers
 import sys
 import time
 import uuid
@@ -55,10 +56,10 @@ def setup(name: str = "service") -> None:
         from app import config
 
         config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        everything = logging.FileHandler(config.LOG_DIR / f"{name}.log", encoding="utf-8")
+        everything = _daily_file(config.LOG_DIR / f"{name}.log")
         everything.setFormatter(formatter)
         errors_name = "errors.log" if name == "service" else f"{name}-errors.log"
-        errors = logging.FileHandler(config.LOG_DIR / errors_name, encoding="utf-8")
+        errors = _daily_file(config.LOG_DIR / errors_name)
         errors.setLevel(logging.ERROR)
         errors.setFormatter(formatter)
         _logger.addHandler(everything)
@@ -68,6 +69,19 @@ def setup(name: str = "service") -> None:
         _state["files"] = False
     _logger.setLevel(logging.INFO)
     _logger.propagate = False
+
+
+LOG_RETENTION_DAYS = 14        # PRD 9.3 추적 — 로그 14일 보관
+
+
+def _daily_file(path) -> logging.Handler:
+    """UTC 자정마다 {파일}.YYYY-MM-DD 로 넘기고 14일 치만 남긴다.
+
+    파일은 컨테이너 밖(호스트 ./logs/<컨테이너>)에 마운트된다 — 배포로 컨테이너가 다시 만들어져도
+    남아야 장애 실험의 로그 증빙이 된다. 순환이 없으면 그 파일이 끝없이 커진다.
+    """
+    return logging.handlers.TimedRotatingFileHandler(
+        path, when="midnight", backupCount=LOG_RETENTION_DAYS, encoding="utf-8", utc=True)
 
 
 def logs_writable() -> bool:

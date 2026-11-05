@@ -47,11 +47,21 @@ wait_gateway_up() {
 }
 
 # 컨테이너 안에서 자기 /health 를 부른다 (slim 이미지에는 curl 이 없다)
+# "프로세스가 떠서 HTTP 로 답한다"만 본다 — 상태 코드는 따지지 않는다.
+#   해석 서비스는 장애 주입(F-1 error 모드)이 켜져 있으면 /health 에 503 을 답한다. 그것도 떠 있는 것이다
+#   (주입 해제 · 복구 판단은 healing 몫이고, 배포가 그 때문에 멈추면 앱 스택을 못 띄운 채 끝난다)
 wait_http() {
   local name=$1 url=$2
   for _ in $(seq 1 30); do
-    docker exec "$name" python -c "import urllib.request; urllib.request.urlopen('$url', timeout=2)" \
-      >/dev/null 2>&1 && return 0
+    docker exec "$name" python -c "
+import sys, urllib.request, urllib.error
+try:
+    urllib.request.urlopen('$url', timeout=2)
+except urllib.error.HTTPError:
+    pass                      # 4xx · 5xx 도 응답이다
+except Exception:
+    sys.exit(1)               # 연결 거부 · 시간 초과 = 아직 안 떴다
+" >/dev/null 2>&1 && return 0
     sleep 2
   done
   return 1

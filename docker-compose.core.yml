@@ -12,7 +12,7 @@
 #   앱 스택 네트워크(moa-a_default · moa-b_default)는 게이트웨이가 공용 스택에서 먼저 붙어야 해서
 #   앱 스택보다 먼저 있어야 한다 — compose 의 depends_on 은 프로젝트를 넘지 못한다
 #
-# 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
+# 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD · HEALING_RW_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
 services:
   # 밖으로 여는 유일한 포트 8501. 두 앱 스택 네트워크에 모두 붙어 A · B frontend 로 나눠 보낸다
   # 설정: gateway/haproxy.cfg (서버에도 이 파일을 같은 경로로 둔다)
@@ -86,7 +86,46 @@ services:
         condition: service_healthy
     restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
 
+  # Docker 소켓 앞의 관문 — 조회 + 허용목록 컨테이너 재시작만 통과 (socket-proxy/haproxy.cfg)
+  # healing 만 붙는 내부 네트워크 ctl 에만 둔다 → backend 등 다른 컨테이너는 이 프록시에 닿지 않는다
+  socket-proxy:
+    image: haproxy:3.2-alpine
+    user: root             # docker.sock (root:docker 660) 을 읽으려면 필요. 대신 API 는 cfg 에서 막는다
+    volumes:
+      - ./socket-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "2375"
+    networks: [ctl]
+    restart: unless-stopped
+
+  # 장애 대응 층 (Monitor · Diagnosis · Recovery Worker · Verification) — PRD 5.2
+  # healing 코드가 들어오기 전까지 빈 명령으로 자리만 잡는다 → 코드가 생기면 command 를 ["python", "-m", "healing"] 으로
+  healing:
+    image: ${REGISTRY:-}moa-backend:${TAG:-latest}
+    command: ["sleep", "infinity"]
+    # backend/.env 를 통째로 넘기지 않는다 — LLM 키 등 healing 이 쓰지 않는 비밀값까지 들어가므로 필요한 값만 준다
+    environment:
+      # 연결 규칙 (기획서 6절 배포 구성) — healing 담당과 합의한 값
+      DOCKER_HOST: tcp://socket-proxy:2375
+      GATEWAY_STATS_URL: "http://gateway:8404/stats;csv"
+      HEALING_ALLOWLIST: moa-a-backend-1,moa-b-backend-1,moa-a-frontend-1,moa-b-frontend-1
+      # 대상 상태 확인: http://<허용목록 이름>:8000/health (backend 는 moa_core 에서 컨테이너 이름으로 보인다)
+      # healing_rw = healing 스키마 R/W · app 스키마 읽기만 (sql/01_roles.sql)
+      DATABASE_URL: postgresql://healing_rw:${HEALING_RW_PASSWORD:?이 폴더의 .env 에 HEALING_RW_PASSWORD 를 넣는다 (backend/.env 와 같은 값)}@db:5432/postgres
+    networks:
+      - moa_core
+      - ctl
+    depends_on:
+      db:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_started
+    restart: unless-stopped
+
 networks:
+  ctl:
+    internal: true         # 밖으로 나가는 경로 없음 · healing ↔ socket-proxy 전용 (compose 가 moa-core_ctl 로 만든다)
   moa_core:
     name: moa_core
     external: true

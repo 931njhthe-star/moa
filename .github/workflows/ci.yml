@@ -77,3 +77,80 @@ jobs:
 
       - name: 프론트엔드 Docker 이미지 빌드 (빌드 가능 여부만 검증)
         run: docker build -t moa-frontend:${{ github.sha }} frontend
+
+  # 배포 — main 에 push 될 때만 (dev push · PR 은 여기서 멈춘다)
+  # 테스트 · 빌드가 모두 통과해야 실행된다 → 깨진 코드는 EC2 에 나가지 않는다 (PRD G-5 · SC-7)
+  # 필요한 Secrets: AWS_ACCESS_KEY_ID · AWS_SECRET_ACCESS_KEY (ECR push 권한)
+  #                 ECR_REGISTRY (<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com)
+  #                 EC2_HOST · EC2_SSH_KEY (PEM 전체)
+  # SSH 사용자는 기본 ubuntu — 다르면 저장소 Variables 에 EC2_USER 를 둔다 (Amazon Linux 는 ec2-user)
+  deploy:
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: deploy-production   # 배포는 한 번에 하나씩, 진행 중인 배포는 취소하지 않는다
+      cancel-in-progress: false
+    env:
+      AWS_REGION: ap-northeast-2
+      TAG: ${{ github.sha }}
+      ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      SSH_TARGET: ${{ vars.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 빌드 · ECR push (커밋 sha 태그 + latest)
+        env:
+          REGISTRY: ${{ secrets.ECR_REGISTRY }}/
+        run: |
+          for svc in backend frontend; do
+            img="${REGISTRY}moa-${svc}"
+            docker build -t "$img:$TAG" -t "$img:latest" "$svc"
+            docker push "$img:$TAG"
+            docker push "$img:latest"
+          done
+
+      - name: SSH 키 준비
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: EC2 배포 (compose 파일 갱신 → pull → up)
+        run: |
+          scp -i ~/.ssh/ec2.pem docker-compose.yml "$SSH_TARGET:~/moa/docker-compose.yml"
+          # 서버는 빌드하지 않는다 — EC2 의 IAM 역할로 ECR 에서 이번 커밋 이미지를 받는다 (README 방법 3)
+          ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" bash -s <<SCRIPT
+          set -euo pipefail
+          cd ~/moa
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+          export TAG=$TAG
+          docker compose pull
+          docker compose up -d --no-build
+          docker image prune -f
+          SCRIPT
+
+      - name: 배포 확인 (화면 8501 응답)
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" \
+                 "curl -fsS http://localhost:8501/_stcore/health" >/dev/null 2>&1; then
+              echo "배포 성공: $TAG"; exit 0
+            fi
+            sleep 5
+          done
+          echo "화면이 150초 안에 응답하지 않았다"
+          ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "cd ~/moa && docker compose ps && docker compose logs --tail 50"
+          exit 1

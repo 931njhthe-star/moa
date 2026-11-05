@@ -194,3 +194,17 @@ cd frontend
 
 1. `test-backend`, `test-frontend`: 각 폴더의 테스트 (동시에 실행). 백엔드는 일회용 PostgreSQL에 스키마를 올려 전체 흐름까지 돌린다
 2. `build`: 두 테스트가 통과하면 백엔드·프론트엔드 Docker 이미지를 빌드
+3. `deploy`: **`main` 에 push 될 때만** 실행된다(dev push · PR 은 2단계에서 끝난다). 이미지를 커밋 sha 태그 + `latest` 로 ECR 에 올리고, SSH 로 EC2 의 `~/moa` 에 `docker-compose.yml` 을 복사한 뒤 `docker compose pull && up -d --no-build` 한다. 마지막에 화면(8501) 응답을 확인한다
+
+`deploy` 에 필요한 GitHub Secrets:
+
+| 이름 | 값 |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` · `AWS_SECRET_ACCESS_KEY` | ECR push 권한이 있는 IAM 사용자 키 |
+| `EC2_HOST` | EC2 퍼블릭 IP 또는 DNS |
+| `ECR_REGISTRY` | `<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com` (끝에 / 없음) |
+| `EC2_SSH_KEY` | 키 페어 `.pem` 파일 내용 전체 |
+
+SSH 사용자는 기본 `ubuntu` 다. Amazon Linux 등 다른 사용자면 Secrets 가 아니라 **Variables** 에 `EC2_USER` 를 둔다.
+
+EC2 보안 그룹은 GitHub Actions 러너에서 22번 포트로 들어올 수 있어야 한다. 서버 준비(`.env` · `backend/.env` · DB 초기화)는 위 "방법 3" 을 처음 한 번 해 둔다.

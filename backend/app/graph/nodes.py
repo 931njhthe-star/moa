@@ -223,7 +223,8 @@ def _pick_service() -> str | None:
 def intake_node(state: dict) -> dict:
     """N-03 의도분류 (Intake Agent) — classify.md 로 묶음을 읽어 이벤트마다 route 를 정한다.
 
-    계약 위반 · 누락 → 재생성 2회 → 소진 · 해석 서비스 장애 · 호출 상한이면 그 묶음은 규칙 해석.
+    계약 위반 · 누락 → 재생성 2회 → 대체 모델 재요청 1회(FR-026 · FT-04) → 소진이면 확인 필요.
+    해석 서비스 장애 · 호출 상한이면 그 묶음은 규칙 해석.
     """
     batch, session = state["batch"], state["session"]
     targets = batch["targets"]
@@ -287,6 +288,15 @@ def intake_node(state: dict) -> dict:
                 reason = "regenerate_exhausted"
                 context["validation_feedback"] = {"error": exc.fault_code, "missing_fields": exc.missing_fields,
                                                 "attempt": attempts, "instruction": "Regenerate the complete response and satisfy the declared schema; do not omit required fields."}
+                if attempts >= 1 + config.MAX_REGENERATE and service == "primary" and _backup_ready():
+                    # FT-04 대체 모델 재요청 1회 (승인 PRD FR-026 · PRD 5.6 F-5) — 1차 재생성을 다 쓴 묶음만.
+                    # 성공하면 그 묶음은 대체 모델 해석으로, 실패하면 아래에서 확인 필요로 담당자에게 넘긴다.
+                    # attempts 를 MAX_REGENERATE 로 되돌려 while 조건이 딱 한 번만 더 돌게 한다.
+                    # 로그 event 는 고정 목록이라 새 이름 대신 schema_invalid 에 detail 을 단다(D-03 결정 ⑥)
+                    logging_setup.log("schema_invalid", level="warning", session_id=session["session_id"],
+                                      trace_id=state.get("trace_id"), agent="intake",
+                                      detail="backup_model_retry", batch_no=batch["batch_no"])
+                    service, attempts = "backup", config.MAX_REGENERATE
                 continue
             reason = exc.fault_code                       # 의존 서비스 장애 — 복구는 장애 대응 층
             break

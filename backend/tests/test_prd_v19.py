@@ -10,7 +10,7 @@ import pytest
 
 from app import config, interpreter_client, logging_setup
 from app.graph import nodes
-from tests.test_graph import _batch, interpreter, msgs  # noqa: F401 — fixture 재사용
+from tests.test_graph import _batch, _contract, interpreter, msgs  # noqa: F401 — fixture 재사용
 
 SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
 
@@ -50,8 +50,11 @@ def test_plan_key_is_in_run_state():
     assert "plan" in RunState.__annotations__
 
 
-# --- F-5 형식 오류는 재생성 후 NEEDS_REVIEW (PRD 8.1) -----------------------------------------
-def test_invalid_output_does_not_switch_to_backup_after_regenerate_exhausted(interpreter, monkeypatch):
+# --- F-5 형식 오류 — 재생성 2회 → 대체 모델 1회 → NEEDS_REVIEW (승인 PRD FR-026 · FT-04) -------
+# 저장소 docs/PRD.md v1.3 의 F-5 행은 "재생성 2회 → NEEDS_REVIEW"만 적어 대체 모델 단계가 빠져 있다.
+# 승인 PRD(루트 PRD.md) FR-026 은 "같은 입력으로 최대 2회 재생성 → 대체 모델로 1회 → 넘으면 규칙 해석
+# 폴백 또는 NEEDS_REVIEW"를 P0 필수로 적는다. 정본을 따라 대체 모델 재요청 1회를 되살렸다(2026-11-06).
+def test_invalid_output_switches_to_backup_once_after_regenerate_exhausted(interpreter, monkeypatch):
     monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
     attempted_services = []
     original = interpreter_client.interpret_resilient
@@ -62,20 +65,40 @@ def test_invalid_output_does_not_switch_to_backup_after_regenerate_exhausted(int
 
     monkeypatch.setattr(interpreter_client, "interpret_resilient", record_service)
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
-    interpreter.extend([bad, bad, bad])
+    interpreter.extend([bad, bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
-    assert out["llm_calls"] == 3                                           # 최초 1 + 재생성 2
-    assert attempted_services == ["primary"] * 3
-    assert out["events"][0]["event_type"] == "ignore"
+    assert out["llm_calls"] == 4                        # 최초 1 + 재생성 2 + 대체 모델 1 (FR-026)
+    assert attempted_services == ["primary"] * 3 + ["backup"]
+    assert out["events"][0]["event_type"] == "ignore"   # 대체 모델까지 실패하면 담당자에게 넘긴다
     assert out["degraded"][0]["needs_review"] is True
+
+
+def test_backup_model_retry_result_is_used_when_it_passes(interpreter, monkeypatch):
+    monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
+    bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
+    interpreter.extend([bad, bad, bad, _contract("m1", event_type="ignore")])
+    out = nodes.intake_node(_batch(msgs(1)))
+    assert out["llm_calls"] == 4
+    assert not out.get("degraded")                      # 대체 모델 해석이 통과하면 그 결과를 쓴다
+
+
+def test_backup_model_retry_is_logged(interpreter, monkeypatch):
+    monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
+    logged = []
+    monkeypatch.setattr(logging_setup, "log", lambda event, **f: logged.append((event, f)))
+    bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
+    interpreter.extend([bad, bad, bad, bad])
+    nodes.intake_node(_batch(msgs(1)))
+    # 로그 event 는 고정 목록이다 — 새 이름 대신 schema_invalid 에 detail 로 구분한다(D-03 결정 6)
+    assert any(e == "schema_invalid" and f.get("detail") == "backup_model_retry" for e, f in logged)
 
 
 def test_invalid_output_after_regeneration_is_not_replaced_by_rules(interpreter, monkeypatch):
     monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
-    interpreter.extend([bad, bad, bad])
+    interpreter.extend([bad, bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
-    assert out["llm_calls"] == 3
+    assert out["llm_calls"] == 4
     assert out["degraded"][0]["reason"] == "regenerate_exhausted"
     assert out["events"][0]["event_type"] == "ignore"
     assert out["degraded"][0]["needs_review"] is True

@@ -76,7 +76,7 @@ def catalog(brand_id: str, menu_version: str | None = None, *, allow_stale: bool
     cached = _CACHE.get(key)
     try:
         from app.services import incidents
-        injected = any(row["target"] == "menu_store" and row["mode"] == "block"
+        injected = any(row.get("target") == "menu_store" and row.get("mode") == "block"
                        for row in incidents.active_injections())
     except db.DbUnavailable:
         injected = False

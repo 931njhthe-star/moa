@@ -84,7 +84,7 @@ def batch_node(state: dict) -> dict:
     if state.get("source") == "snapshot":
         saved = _saved_events(state["session"])
         if saved is not None:
-            # 로그 event 는 17종 고정(D-03 결정 ⑥) — 새 이름 대신 checkpoint_saved 에 resumed 를 단다
+            # 로그 event 는 고정 목록(D-03 결정 ⑥) — 새 이름 대신 checkpoint_saved 에 resumed 를 단다
             logging_setup.log("checkpoint_saved", session_id=state["session"]["session_id"],
                               trace_id=state.get("trace_id"), checkpoint="chat_read",
                               resumed=True, events=len(saved))
@@ -117,7 +117,7 @@ def _record_plan(state: dict, batches: list[dict], service: str | None, *, resum
     """처리 계획 (Planner · PRD 5.9.3) — N-02 가 이미 정한 값을 계획 한 장으로 모아 남긴다.
 
     계획을 바꾸는 판단은 하지 않는다(값은 위 batch_node 가 정했다). 기록만 한다 — 실행 결과와 대조하려고.
-    로그 event 는 17종 고정(D-03 결정 ⑥)이라 새 이름 대신 route_decision 에 stage="plan" 을 단다.
+    로그 event 는 고정 목록(D-03 결정 ⑥)이라 새 이름 대신 route_decision 에 stage="plan" 을 단다.
     `source` 키는 쓰지 않는다 — 분류 결과 route_decision(source=snapshot · chat · reply)과 섞이지 않게.
     """
     llm_batches = [b["batch_no"] for b in batches if b.get("use_llm")]

@@ -120,19 +120,21 @@ def test_backup_ready_needs_address(monkeypatch):
 
 
 # --- 운영 대시보드 비밀번호 기본값 (R-17) -------------------------------------------------------
-@pytest.mark.parametrize("env, value, expected, is_default", [
-    ("lab", "", "moa-ops", True),
+# 종전에는 lab 에서 코드의 짧은 고정 문자열로 로그인됐다. PRD R-17 이 "배포 전 제거하거나
+# .env 설정을 필수로 한다"로 정해 두었으므로 없앴다 — 환경과 무관하게 값이 없으면 막는다
+@pytest.mark.parametrize("env, value, expected, missing", [
+    ("lab", "", "", True),
     ("lab", "long-enough-pw", "long-enough-pw", False),
-    ("prod", "", "", False),                                               # 실습 밖에서는 로그인 막힘
+    ("prod", "", "", True),
     ("prod", "long-enough-pw", "long-enough-pw", False),
 ])
-def test_ops_password_default_only_in_lab(monkeypatch, env, value, expected, is_default):
+def test_ops_password_comes_only_from_the_environment(monkeypatch, env, value, expected, missing):
     monkeypatch.setenv("ENVIRONMENT", env)
     monkeypatch.setenv("OPS_DASHBOARD_PASSWORD", value)
     try:
         reloaded = importlib.reload(config)
         assert reloaded.OPS_DASHBOARD_PASSWORD == expected
-        assert reloaded.OPS_PASSWORD_IS_DEFAULT is is_default
+        assert reloaded.OPS_PASSWORD_MISSING is missing
     finally:
         monkeypatch.undo()
         importlib.reload(config)

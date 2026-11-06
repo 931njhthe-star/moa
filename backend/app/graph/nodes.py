@@ -244,10 +244,10 @@ def intake_node(state: dict) -> dict:
     elif not batch["use_llm"] and _interpreter_ready():
         reason = "llm_call_cap"
     attempts = 0
-    while service and attempts <= config.MAX_REGENERATE:
+    while service and attempts < 1 + config.MAX_REGENERATE:
         try:
             calls += 1
-            result = interpreter_client.interpret(
+            result = interpreter_client.interpret_resilient(
                 "extract_events", wire, context, service=service,
                 trace_id=state.get("trace_id"), session_id=session["session_id"])
             known = target_ids | {m["message_id"] for m in batch["prev"]}
@@ -285,19 +285,21 @@ def intake_node(state: dict) -> dict:
             if exc.fault_code == "AGENT_OUTPUT_INVALID":
                 attempts += 1
                 reason = "regenerate_exhausted"
-                if attempts > config.MAX_REGENERATE and service == "primary" and _backup_ready():
-                    # FT-04 대체 모델 재요청 1회 (PRD 5.6 F-5 · FR-026) — 1차 재생성을 다 쓴 묶음만.
-                    # 성공하면 그 묶음은 대체 모델 해석으로, 실패하면 지금처럼 규칙 해석으로 내려간다
-                    logging_setup.log("schema_invalid", level="warning", session_id=session["session_id"],
-                                      trace_id=state.get("trace_id"), agent="intake",
-                                      detail="backup_model_retry", batch_no=batch["batch_no"])
-                    service, attempts = "backup", config.MAX_REGENERATE
+                context["validation_feedback"] = {"error": exc.fault_code, "missing_fields": exc.missing_fields,
+                                                "attempt": attempts, "instruction": "Regenerate the complete response and satisfy the declared schema; do not omit required fields."}
                 continue
             reason = exc.fault_code                       # 의존 서비스 장애 — 복구는 장애 대응 층
             break
-    if attempts > config.MAX_REGENERATE:
+    if attempts >= 1 + config.MAX_REGENERATE:
         reason = "regenerate_exhausted" if reason != "missing_events" else "missing_events"
 
+    if reason == "regenerate_exhausted":
+        events = intake.from_contract(
+            [{"message_id": m["message_id"], "event_type": "ignore"} for m in targets],
+            targets, known_ids=target_ids)
+        return {"events": _ordered(events), "llm_calls": calls,
+                "degraded": [{"batch_no": batch["batch_no"], "reason": "regenerate_exhausted",
+                              "messages": len(targets), "needs_review": True}]}
     events = intake.extract_events(targets, brand_id=session["brand_id"],
                                    menu_version=session["menu_version"])
     degraded = [] if reason == "interpreter_unset" else [
@@ -957,9 +959,12 @@ def output_guard_node(state: dict) -> dict:
     if source == "snapshot":
         with db.transaction() as cur:
             pending = sessions.review_count(session["session_id"])
+            needs_review = pending or any(d.get("needs_review") for d in state.get("degraded") or [])
             sessions.set_status(cur, session["session_id"],
-                                "needs_review" if pending else "awaiting_confirmation")
+                                "needs_review" if needs_review else "awaiting_confirmation")
         result["review_count"] = sessions.review_count(session["session_id"])
+        if any(d.get("needs_review") for d in state.get("degraded") or []):
+            result["needs_review"] = True
     return {"result": result, "guard": guard}
 
 

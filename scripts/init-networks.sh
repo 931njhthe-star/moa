@@ -3,9 +3,10 @@
 #   moa_core       공용 스택(db · interpreter · gateway · healing) + 각 앱 스택 backend
 #   moa-a_default  앱 스택 A 전용 (+ gateway)
 #   moa-b_default  앱 스택 B 전용 (+ gateway)
+#   moa-ops_default 운영 대시보드 전용 스택 (docker-compose.ops.yml) — gateway 는 붙지 않는다
 # compose 파일은 세 네트워크를 external 로 참조한다 — 게이트웨이가 앱 스택보다 먼저 떠도 붙을 수 있게
 set -eu
-for net in moa_core moa-a_default moa-b_default; do
+for net in moa_core moa-a_default moa-b_default moa-ops_default; do
   if docker network inspect "$net" >/dev/null 2>&1; then
     echo "있음: $net"
   else

@@ -234,7 +234,7 @@ jobs:
       - name: EC2 배포 파일 복사 (공용 + 앱 compose · 게이트웨이 · 소켓 프록시 설정 · 스크립트)
         run: |
           # 소스 코드는 보내지 않는다 — 서버는 빌드하지 않고 ECR 이미지를 받는다 (README 방법 3)
-          tar czf - docker-compose.core.yml docker-compose.app.yml gateway socket-proxy scripts | ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "mkdir -p ~/moa && tar xzf - -C ~/moa"
+          tar czf - docker-compose.core.yml docker-compose.app.yml docker-compose.ops.yml gateway socket-proxy scripts | ssh -i ~/.ssh/ec2.pem "$SSH_TARGET" "mkdir -p ~/moa && tar xzf - -C ~/moa"
 
       - name: EC2 순차 배포 (공용 → 해석 서비스 → 앱 A → A UP 확인 → 앱 B)
         run: |

@@ -123,3 +123,66 @@ def test_trials_grid_asks_the_healing_role_for_the_latest_five_per_fault(monkeyp
     _, seen = _grid(monkeypatch, GRID_ROWS)
     assert seen["role"] == "healing"
     assert 5 in (seen["params"] or ())
+
+
+# --- 환경 확인이 백엔드를 얼리지 않는다 (2026-11-06 실측 결함) --------------------------------
+# preflight 는 Gateway · 해석기 · A/B backend 를 동기 httpx 로 부른다. 그것을 `async def` 엔드포인트
+# 안에서 그대로 돌리면 **이벤트 루프가 막혀 백엔드가 모든 요청을 못 받는다**.
+# 실측(2026-11-06): 환경 확인 1회에 7초간 응답 불가. 자기 자신을 부르는 "A backend" 점검이
+# ReadTimeout 으로 실패하고, 그 사이 다른 컨테이너의 요청까지 함께 실패했다.
+# create_run 도 preflight 를 부르므로 두 엔드포인트 모두 해당한다.
+def _blocking_preflight_scenario(path: str, body: dict):
+    """느린 동기 preflight 가 도는 중에 다른 요청이 바로 처리되는지 — (느린 응답, 빠른 요청 지연초)."""
+    import time
+
+    import anyio
+    import httpx
+
+    from app.api import deps
+    from app.main import app
+
+    app.dependency_overrides[deps.ops_token] = lambda: "test-ops-token"
+    measured = {"t0": time.monotonic()}
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=30) as client:
+            async def slow():
+                measured["slow"] = await client.post(path, json=body)
+
+            async def fast():
+                # 시나리오 시작 시각부터 잰다 — 루프가 막히면 아래 sleep 조차 제때 깨지 못하므로
+                # GET 바로 앞에서 재면 블로킹이 끝난 뒤를 재게 되어 결함을 놓친다(2026-11-06 측정 오류)
+                await anyio.sleep(0.1)          # 느린 요청이 확실히 안에 들어간 뒤에 건다
+                await client.get("/ready")
+                measured["fast_sec"] = time.monotonic() - measured["t0"]
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(slow)
+                tg.start_soon(fast)
+
+    try:
+        anyio.run(scenario)
+    finally:
+        app.dependency_overrides.clear()
+    return measured
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/ops/workflows/preflight", {"mode": "quick", "fault_type": "F-1"}),
+    ("/api/ops/workflows", {"mode": "quick", "fault_type": "F-1", "repetitions": 1,
+                            "injection_seconds": 1}),
+])
+def test_workflow_endpoints_do_not_block_the_event_loop(path, body, monkeypatch):
+    import time
+
+    def slow_preflight(**_):
+        time.sleep(0.6)                         # 동기 블로킹 — 실제 _http_check 의 httpx.get 과 같은 성질
+        return {"ready": False, "checks": [], "environment": "lab", "checked_at": "now"}
+
+    monkeypatch.setattr(workflows, "preflight", slow_preflight)
+    measured = _blocking_preflight_scenario(path, body)
+
+    assert measured["slow"].status_code == 200
+    # 루프가 막히면 이 요청은 느린 요청(0.6초)이 끝난 뒤에야 처리된다
+    assert measured["fast_sec"] < 0.4, f"다른 요청이 {measured['fast_sec']:.2f}초 뒤에야 처리됐다"

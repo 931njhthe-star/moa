@@ -242,3 +242,33 @@ def test_db_outage_stays_quiet_while_healthy():
     out = monitor.DbOutage()
     assert out.observe(ok=True, now=1.0) is None
     assert out.observe(ok=True, now=2.0) is None
+
+
+# --- 시험은 정상 상태에서 시작한다 -------------------------------------------------------------
+# 실측 결함 2026-11-06: F-1 시험이 primary 회로를 열어 놓자 뒤따른 F-2 · F-5 시험이
+# 냉각(60초)이 끝나기 전에 돌아 **primary 를 아예 부르지 않았다**.
+#   시도 기록이 backup:성공 하나뿐 -> 실패를 관측하지 못해 탐지 시각이 복구 후로 밀림
+#   -> MTTR 9ms · 15ms 라는 거짓 합격 (F-1 에서 고친 것과 같은 증상이 시험 간 간섭으로 재발)
+# 회차마다 회로를 정상으로 되돌려 회차를 서로 독립시킨다. preflight 가 이미 두 해석기의
+# 정상을 확인하므로 되돌리는 것이 실제 상태와 어긋나지 않는다.
+def test_resetting_circuits_puts_every_dependency_back_to_up(fake_db):
+    monitor.reset_circuits()
+    (sql, _), = [x for x in fake_db["executed"] if "healing.circuit_state" in x[0]]
+    flat = sql.replace(" ", "")
+    assert "state='up'" in flat and "consecutive_failures=0" in flat
+    assert "cooldown_until=NULL" in flat
+    assert "WHERE" not in sql.upper(), "회차마다 전부 되돌린다 — 한 대상만 남기면 다음 회차가 또 간섭한다"
+
+
+# --- 네트워크 격리는 compose 불변식이다 --------------------------------------------------------
+# 실측 결함 2026-11-06: F-3 검증이 프런트엔드를 컨테이너 이름으로 직접 불렀다
+# (http://moa-a-frontend-1:8501). 프런트엔드는 A/B 격리 네트워크에만 있고 healing 은
+# moa_core · ctl 에만 있어 DNS 가 풀리지 않는다 -> 매 순회 예외 -> 30초 시간 초과로 F-3 이 늘 FAIL.
+# preflight 는 같은 제약을 게이트웨이 경유(sticky 쿠키)로 이미 우회하고 있었다.
+def test_healing_never_probes_a_frontend_by_container_name():
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parent.parent / "healing" / "__main__.py").read_text(encoding="utf-8")
+    assert "frontend-1:8501" not in source, (
+        "프런트엔드는 healing 에서 이름으로 닿지 않는다 — 게이트웨이 경유로 확인한다")
+    assert "MOA_STACK" in source, "게이트웨이 경유 확인은 sticky 쿠키로 스택을 고른다"

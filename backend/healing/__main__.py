@@ -211,6 +211,20 @@ def _service_for(target: str) -> str:
     return "backup" if target.endswith("backup") else "primary"
 
 
+def _cooldown_remaining(target: str, cap: float = 90.0) -> float:
+    """회로 냉각이 끝날 때까지 남은 초 (+1초 여유).
+
+    회차 시작부터 60초를 세면 안 된다 — 회로는 연속 3회 실패가 **다 난 뒤에** 열리므로
+    그만큼 냉각이 늦게 끝난다. 실측 2026-11-06: 60초에 probe 해 `cooldown_until<=NOW()` 에
+    걸려 "cooldown 또는 circuit_open 상태가 준비되지 않아" 로 F-4 가 늘 FAIL 이었다.
+    """
+    key = f"order_interpreter_{_service_for(target)}"
+    row = db.fetch_one(
+        "SELECT GREATEST(0, EXTRACT(EPOCH FROM (cooldown_until - NOW()))) AS s "
+        "  FROM healing.circuit_state WHERE dependency_key=%s", (key,), role="healing")
+    return min(float((row or {}).get("s") or 0) + 1.0, cap)
+
+
 def _probe_circuit(target: str, run_id: str, incident_id: str) -> tuple[bool, str]:
     service = _service_for(target)
     key = f"order_interpreter_{service}"
@@ -284,6 +298,37 @@ def _docker_action(target: str, action: str) -> tuple[bool, str]:
     return True, f"Docker {action} accepted"
 
 
+_STATUS_COL = 17          # HAProxy CSV 의 status 칸 (pxname,svname,... 다음 17번째)
+
+
+def _gateway_status_from_csv(csv: str, letter: str) -> str | None:
+    """`chk_{letter}/backend` 서버의 상태 문자열. 줄을 못 찾으면 None("모른다")."""
+    prefix = f"chk_{letter},backend,"
+    for line in csv.splitlines():
+        if line.startswith(prefix):
+            cells = line.split(",")
+            if len(cells) > _STATUS_COL:
+                return cells[_STATUS_COL]
+    return None
+
+
+def _gateway_excluded_from_csv(csv: str, letter: str) -> bool:
+    """게이트웨이가 이 스택을 사용자 트래픽에서 제외했는가.
+
+    컨테이너가 사라지면 HAProxy 는 DOWN 이 아니라 **MAINT (resolution)** 으로 간다
+    (`resolvers docker` · `init-addr libc,none` — DNS 레코드가 없어진다).
+    "DOWN" 문자열만 보면 영원히 못 찾는다 — 실측 2026-11-06: 60초 동안 DOWN 이 한 번도 안 나와
+    F-3 검증이 "예상과 다름"으로 늘 실패했다. 상태가 UP 으로 시작하지 않으면 제외된 것으로 본다.
+    줄을 못 찾았으면 "모른다"이므로 제외됐다고 하지 않는다 — 모르는 것을 근거로 통과시키지 않는다.
+    """
+    status = _gateway_status_from_csv(csv, letter)
+    return bool(status) and not status.startswith("UP")
+
+
+def _gateway_csv() -> str:
+    return httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0).text
+
+
 def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=None) -> tuple[bool, str, int | None]:
     started = time.monotonic()
     action_started = time.monotonic()
@@ -293,7 +338,8 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
                           "duration_ms": int((time.monotonic() - action_started) * 1000)})
     if not stopped:
         return False, detail, None
-    down_deadline = time.monotonic() + 10
+    # MAINT(resolution) 로 넘어가는 데 실측 약 9초가 걸린다 — 10초는 너무 빡빡했다
+    down_deadline = time.monotonic() + 20
     observed_down = False
     gateway_down = False
     detected_ms = None
@@ -304,9 +350,7 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
         except httpx.HTTPError:
             observed_down = True
         try:
-            stats = httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0)
-            gateway_down = any(line.startswith(f"chk_{letter},backend,") and "DOWN" in line
-                               for line in stats.text.splitlines())
+            gateway_down = _gateway_excluded_from_csv(_gateway_csv(), letter)
         except httpx.HTTPError:
             pass
         if observed_down and gateway_down:
@@ -333,10 +377,11 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
         verification_polls += 1
         try:
             backend = httpx.get(f"http://{target}:8000/ready", timeout=1.0)
-            frontend = httpx.get(f"http://moa-{letter}-frontend-1:8501/_stcore/health", timeout=1.0)
-            stats = httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0)
-            gateway_up = any(line.startswith(f"chk_{letter},backend,") and "UP" in line
-                             for line in stats.text.splitlines())
+            # 프런트엔드는 A/B 격리 네트워크에만 있어 healing 에서 이름으로 닿지 않는다.
+            # 게이트웨이에 sticky 쿠키를 붙여 그 스택의 프런트엔드를 고른다(preflight 와 같은 방식)
+            frontend = httpx.get("http://gateway:8501/_stcore/health", timeout=1.0,
+                                 headers={"Cookie": f"MOA_STACK={letter}"})
+            gateway_up = (_gateway_status_from_csv(_gateway_csv(), letter) or "").startswith("UP")
             consecutive = consecutive + 1 if backend.status_code == 200 and frontend.status_code == 200 and gateway_up else 0
             if consecutive >= 3:
                 passed = observed_down and gateway_down and not cancelled
@@ -354,6 +399,39 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
                           "outcome": "시간 초과", "poll_count": verification_polls,
                           "duration_ms": int((time.monotonic() - verification_started) * 1000)})
     return False, "backend/frontend independent verification failed within 30 seconds", detected_ms
+
+INJECTION_WAIT_SEC = 6.0     # 해석 서비스 모드 캐시(2초)보다 넉넉히 둔다
+
+
+def _interpreter_url(target: str) -> str | None:
+    url = (config.ORDER_INTERPRETER_BACKUP_URL if target.endswith("backup")
+           else config.ORDER_INTERPRETER_PRIMARY_URL)
+    return url or None
+
+
+def _wait_injection_live(target: str, mode: str, run_id: str, no: int) -> bool:
+    """주입이 **실제로 적용될 때까지** 기다린다. 적용된 시각부터 재야 MTTD 가 정직하다.
+
+    해석 서비스는 장애 모드를 2초간 캐시한다(interpreter/main.py `_MODE_TTL_SEC`).
+    그 전에 보낸 요청은 정상으로 응답하므로 주입 직후부터 재면 **장애가 없던 구간이 MTTD 에 섞인다**.
+    실측 2026-11-06: F-2 · F-5 의 첫 합성 요청이 성공해 시도 기록이 "primary:성공" 하나뿐이었고,
+    F-4 는 연속 3회 실패 전제를 못 채워 FAIL 로 끝났다.
+    """
+    url = _interpreter_url(target)
+    if not url:
+        return True
+    deadline = time.monotonic() + INJECTION_WAIT_SEC
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{url}/health", timeout=2.0).json().get("mode") == mode:
+                return True
+        except (httpx.HTTPError, ValueError):
+            pass
+        time.sleep(0.3)
+    _event(run_id, "injection_not_applied", f"주입 적용을 {INJECTION_WAIT_SEC:.0f}초 안에 확인하지 못함",
+           no, {"target": target, "mode": mode})
+    return False
+
 
 def _execute_case(run_id: str, no: int, case: dict) -> dict:
     fault, target, seconds = case["fault_type"], case["target"], int(case["seconds"])
@@ -385,7 +463,13 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
                f"{entry.get('service') or entry.get('action') or '해석 요청'} · "
                f"{entry.get('outcome') or entry.get('result') or '기록'}", no, entry)
 
+    # 회차는 서로 독립이어야 한다 — 앞 회차가 열어 둔 회로를 물려받으면 1차를 건너뛰어
+    # 실패를 관측하지 못하고 MTTD · MTTR 이 뒤바뀐다(실측 2026-11-06 F-2 · F-5)
+    monitor.reset_circuits()
     injection_id = _inject(run_id, no, fault, target, mode)
+    # 주입이 적용된 뒤부터 잰다 — 해석 서비스의 모드 캐시 때문에 직후 요청은 아직 정상이다
+    if target.startswith("order_interpreter_"):
+        _wait_injection_live(target, mode, run_id, no)
     start = time.monotonic()
     _update_run(run_id, phase="detecting", iteration=no)
     detected_at = None
@@ -434,7 +518,7 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
             if fault == "F-4":
                 _clear(run_id, injection_id)
                 _update_run(run_id, phase="cooldown_probe", iteration=no)
-                if _sleep_or_stop(run_id, max(0, 60 - (time.monotonic() - start))):
+                if _sleep_or_stop(run_id, _cooldown_remaining(target)):
                     verdict, detail = False, "중지 요청으로 cooldown/probe를 중단했습니다"
                 else:
                     probe_started = time.monotonic()

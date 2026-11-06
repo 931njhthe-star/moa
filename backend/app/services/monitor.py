@@ -236,3 +236,19 @@ def report_db_outage(record: dict, *, evidence: list[str]) -> str | None:
          record["resolved_at"] - record["detected_at"],
          record["resolved_at"] - record["detected_at"], evidence), role="healing")
     return incident_id
+
+
+def reset_circuits() -> None:
+    """회로를 모두 정상으로 되돌린다 — **장애 시험 회차를 시작하기 전에만** 쓴다.
+
+    왜 필요한가(실측 2026-11-06): F-1 시험이 1차 회로를 열어 놓자 뒤따른 F-2 · F-5 시험이
+    냉각(60초)이 끝나기 전에 돌아 1차를 아예 부르지 않았다. 실패를 관측하지 못하니 탐지 시각이
+    복구 뒤로 밀려 MTTR 이 9ms · 15ms 로 나왔다 — 늘 통과하는 거짓 합격이다.
+
+    되돌리는 것이 실제 상태와 어긋나지 않는 이유: preflight 가 직전에 두 해석기 · 두 backend ·
+    게이트웨이의 정상을 확인한다. 시험은 정상 상태에서 주입해야 측정이 유효하다.
+    운영 중에는 쓰지 않는다 — 회로는 업무 층의 관측으로만 열리고 닫혀야 한다.
+    """
+    db.execute("UPDATE healing.circuit_state "
+               "SET state='up',consecutive_failures=0,cooldown_until=NULL,updated_at=NOW()",
+               role="healing")

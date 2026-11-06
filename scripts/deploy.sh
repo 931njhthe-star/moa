@@ -131,8 +131,12 @@ fi
 # ---------- 4. 공용 스택 기반 ----------
 log "공용 스택: db · socket-proxy · gateway"
 "${CORE[@]}" up -d --no-build --wait --wait-timeout 120 db socket-proxy gateway
-# 설정 파일(bind mount)만 바뀐 경우 컨테이너가 다시 만들어지지 않으므로 다시 읽게 한다
-docker kill -s HUP "$GATEWAY" moa-core-socket-proxy-1 >/dev/null
+# 설정 파일(bind mount)만 바뀐 경우 컨테이너가 다시 만들어지지 않으므로 다시 읽게 한다 (HAProxy 는 HUP 으로 무중단 재적재)
+#   `docker kill -s HUP` 을 쓰지 않는다 — Docker 가 "사람이 멈춤"으로 기록해, 호스트 · Docker 재시작 뒤
+#   unless-stopped 인데도 gateway · socket-proxy 가 다시 뜨지 않았다(2026-11-06 운영 중단). 컨테이너 안에서 PID 1 에 보낸다
+for c in "$GATEWAY" moa-core-socket-proxy-1; do
+  docker exec "$c" kill -HUP 1
+done
 
 # 앱을 바꾸기 전에 DB 를 백업한다 (서버만 · ~/moa/backups · 최근 14개). 실패해도 배포는 계속하되 경고를 남긴다
 if [ "$SKIP_PULL" != "1" ]; then

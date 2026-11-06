@@ -24,6 +24,8 @@ _RULES = {
     "dep_5xx_ratio": ("DEP_HTTP_5XX", 2, "주문 해석 오류 응답"),
     "timeout_count": ("DEP_TIMEOUT", 1, "응답 지연"),
     "schema_error_rate": ("AGENT_OUTPUT_INVALID", 1, "잘못된 결과 형식"),
+    # 처리되지 않은 예외 1회로 사건이 된다 (PRD 5.6.1 에이전트 실행 FT-02)
+    "agent_error_count": ("AGENT_EXCEPTION", 1, "처리 중 예외"),
 }
 # F-3(agent_error_count · restart_count)과 F-6(db_connection_error · slow_query_count)은
 # 수집 훅이 들어오는 단계에서 함께 넣는다. 수집이 없는 규칙을 미리 두면 사건이 만들어지지 않거나,
@@ -128,3 +130,54 @@ def close_incident(incident_id: str, *, recovered: bool, manual_check: bool = Fa
                "recovery_started_at=COALESCE(recovery_started_at,detected_at),"
                "failed_at=NOW(),escalated_at=NOW() WHERE incident_id=%s",
                ("자동 복구 실패", incident_id), role="healing")
+
+
+# --- 폴링으로 직접 관측한 장애 (F-3) ----------------------------------------------------------
+# 사건을 만드는 입구가 둘이다. 메트릭을 세는 pending_signals 와, 헬스체크처럼 **직접 관측**하는 이쪽.
+# 둘 다 Monitor 역할이고, 중복 방지 기준(열린 사건)도 같다.
+def open_incident_for(fault_code: str, target: str, *, label: str, detection_metric: str,
+                      evidence: list[str], trace_id: str | None = None) -> str | None:
+    """직접 관측한 장애의 사건. 같은 장애가 이미 열려 있으면 만들지 않고 None 을 돌려준다."""
+    if _open_incident_count(fault_code, target):
+        return None
+    incident_id = "INC-" + secrets.token_hex(6).upper()
+    db.execute(
+        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
+        "detection_metric,detection_evidence,is_verification_run) "
+        "VALUES (%s,%s,%s,'detected',%s,%s,%s,false)",
+        (incident_id, trace_id or f"tr_{secrets.token_hex(6).upper()}", fault_code, label,
+         detection_metric, evidence), role="healing")
+    return incident_id
+
+
+def test_injection_active(target: str) -> bool:
+    """이 대상에 **시험 주입**이 걸려 있는가. 시험 주입에만 run_id 가 있다.
+
+    걸려 있으면 상시 감시는 비켜선다 — 시험이 만든 장애를 실제 사건으로 또 세면
+    SC-4 무인 복구율이 오염되고, 시험이 복구하는 중에 둘이 같이 재시작할 수도 있다.
+    """
+    row = db.fetch_one(
+        "SELECT COUNT(*) AS n FROM healing.fault_injection "
+        " WHERE target = %s AND action = 'inject' AND run_id IS NOT NULL AND cleared_at IS NULL",
+        (target,), role="healing")
+    return bool((row or {}).get("n", 0))
+
+
+# 재시작 상한 (PRD 5.6 F-3 "같은 세션 재실행 1회 · 10분 내 재시작 2회")
+# 상한이 없으면 올라오지 않는 컨테이너를 영원히 재시작한다 — 폭주 방어의 일부다.
+RESTART_LIMIT = 2
+RESTART_WINDOW_SEC = 600
+
+
+def restart_allowed(stamps: list[float], *, now: float) -> bool:
+    """최근 창 안의 재시작 수가 상한 미만인가. 넘으면 사람에게 넘긴다(에스컬레이션)."""
+    recent = [t for t in stamps if now - t < RESTART_WINDOW_SEC]
+    return len(recent) < RESTART_LIMIT
+
+# 자동 복구가 가능한 장애 (PRD 5.6 복구정책)
+#
+# AGENT_EXCEPTION 의 정책은 "요청 단위로 잡아 마지막 체크포인트부터 1회 재실행"이지만
+# 업무 층에 그 재실행이 아직 없다. 자동 복구했다고 적으면 거짓이고 SC-4 무인 복구율이
+# 부풀려지므로, 기록만 하고 담당자 확인(manual_check)으로 넘긴다.
+AUTO_RECOVERABLE = frozenset({"DEP_HTTP_5XX", "DEP_TIMEOUT", "AGENT_OUTPUT_INVALID",
+                              "WORKER_DOWN", "DB_UNAVAILABLE"})

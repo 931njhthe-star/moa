@@ -14,7 +14,7 @@ import psycopg
 from app import config, db, ids, logging_setup
 from app.contracts import TASK_CONTRACTS
 from app.interpreter_client import InterpreterError, interpret_resilient
-from app.services import incidents, menu, monitor, workflows
+from app.services import incidents, menu, metrics, monitor, workflows
 
 LOG = logging.getLogger("moa.healing")
 WORKER_ID = os.getenv("HOSTNAME") or socket.gethostname()
@@ -579,6 +579,82 @@ def _run(run: dict) -> None:
 
 CODE_FAULT = {code: fault for fault, code in F_CODE.items()}
 
+# F-3 상시 감시 (PRD 5.6.1 "헬스체크 연속 2회 실패" · 5.6 "준비 대기 최대 30초")
+HEALTH_EVERY_SEC = 5.0
+HEALTH_FAIL_NEEDED = 2
+READY_WAIT_SEC = 30
+_HEALTH_FAILS: dict[str, int] = {}
+_RESTARTS: dict[str, list[float]] = {}
+_HEALTH_AT = 0.0
+
+
+def _ready(target: str, timeout: float = 2.0) -> bool:
+    try:
+        return httpx.get(f"http://{target}:8000/ready", timeout=timeout).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _health_watch() -> None:
+    """F-3 상시 감시 — 헬스체크 연속 2회 실패를 처리 프로세스 중단으로 보고 재시작한다.
+
+    1회 실패로 움직이지 않는다(순간 오류 오탐 방지, PRD 5.6.1 "5초 주기 / 연속 2회").
+    3회 이상에서도 다시 만들지 않는다 — 그때는 사건이 이미 열려 있다.
+    """
+    global _HEALTH_AT
+    if time.monotonic() - _HEALTH_AT < HEALTH_EVERY_SEC:
+        return
+    _HEALTH_AT = time.monotonic()
+    for target in (name for name in _allowlist() if "backend" in name):
+        if monitor.test_injection_active(target):
+            _HEALTH_FAILS[target] = 0          # 시험이 복구를 맡는다 — 끼어들면 둘이 같이 재시작한다
+            continue
+        if _ready(target):
+            _HEALTH_FAILS[target] = 0
+            continue
+        fails = _HEALTH_FAILS[target] = _HEALTH_FAILS.get(target, 0) + 1
+        metrics.record("conn_fail_count", target, fails, threshold=HEALTH_FAIL_NEEDED,
+                       breached=fails >= HEALTH_FAIL_NEEDED)
+        if fails == HEALTH_FAIL_NEEDED:
+            _recover_worker(target)
+
+
+def _recover_worker(target: str) -> None:
+    incident_id = monitor.open_incident_for(
+        "WORKER_DOWN", target, label=INCIDENT_LABELS["WORKER_DOWN"],
+        detection_metric="conn_fail_count",
+        evidence=[f"{target} /ready 연속 {HEALTH_FAIL_NEEDED}회 실패"])
+    if not incident_id:
+        return
+    logging_setup.log("incident_detected", incident_id=incident_id, fault_code="WORKER_DOWN",
+                      target=target, detection_metric="conn_fail_count")
+    stamps = _RESTARTS.setdefault(target, [])
+    now = time.monotonic()
+    if not monitor.restart_allowed(stamps, now=now):
+        # 상한을 넘으면 사람에게 넘긴다 — 올라오지 않는 컨테이너를 영원히 재시작하지 않는다
+        monitor.close_incident(incident_id, recovered=False)
+        logging_setup.log("escalated", level="warning", incident_id=incident_id,
+                          detail=f"{target} 재시작 상한 초과(10분 내 {monitor.RESTART_LIMIT}회)")
+        return
+    logging_setup.log("recovery_started", incident_id=incident_id, fault_code="WORKER_DOWN")
+    ok, detail = _docker_action(target, "restart")
+    stamps.append(now)
+    metrics.record("restart_count", target, 1, threshold=1, breached=True)
+    verified = False
+    if ok:
+        deadline = time.monotonic() + READY_WAIT_SEC
+        while time.monotonic() < deadline and not verified:
+            verified = _ready(target)
+            if not verified:
+                time.sleep(1.0)
+    monitor.close_incident(incident_id, recovered=verified)
+    if verified:
+        _HEALTH_FAILS[target] = 0
+        logging_setup.log("recovery_verified", incident_id=incident_id,
+                          detail=f"{target} 재시작 후 준비 확인")
+    else:
+        logging_setup.log("escalated", level="warning", incident_id=incident_id, detail=detail)
+
 
 def _close_incident(incident_id: str, *, recovered: bool, detail: str) -> None:
     monitor.close_incident(incident_id, recovered=recovered)
@@ -596,13 +672,20 @@ def _monitor() -> None:
     복구한 쪽이 스스로 "성공"이라고 판정하지 못하게 한다(5.3 Verification 독립).
     """
     for signal in monitor.pending_signals():
-        fault = CODE_FAULT.get(signal["fault_code"])
-        if fault is None:
-            continue
         incident_id = monitor.open_incident(signal)
         logging_setup.log("incident_detected", incident_id=incident_id,
                           fault_code=signal["fault_code"], target=signal["target"],
                           detection_metric=signal["metric_key"], trace_id=signal.get("trace_id"))
+        fault = CODE_FAULT.get(signal["fault_code"])
+        # 합성 요청으로 검증할 수 있는 것은 주문 해석 서비스뿐이다. 그 밖(예외 · 저장소)은
+        # 복구했다고 적지 않는다 — 사건을 먼저 남기고 담당자 확인으로 넘긴다
+        verifiable = fault is not None and signal["target"].startswith("order_interpreter_")
+        if not verifiable or signal["fault_code"] not in monitor.AUTO_RECOVERABLE:
+            # 자동 복구 경로가 없는 장애는 복구했다고 적지 않는다 — 기록만 하고 사람에게 넘긴다
+            monitor.close_incident(incident_id, recovered=False, manual_check=True)
+            logging_setup.log("escalated", level="warning", incident_id=incident_id,
+                              detail=f"{signal['fault_code']} 자동 복구 · 검증 경로 없음 — 담당자 확인")
+            continue
         logging_setup.log("recovery_started", incident_id=incident_id, fault_code=signal["fault_code"])
         ok, detail, _ = _synthetic_interpreter_request(fault, signal["target"], 1, incident_id)
         _close_incident(incident_id, recovered=ok, detail=detail)
@@ -616,6 +699,7 @@ def main() -> None:
         try:
             _heartbeat()
             _monitor()                    # 상시 감시는 시험 워크플로와 **나란히** 돈다
+            _health_watch()               # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
             run = _claim() if config.ENVIRONMENT == "lab" else None
             if run:
                 _run(run)

@@ -24,8 +24,11 @@ def fake_db(monkeypatch):
         return list(state["rows"])
 
     monkeypatch.setattr(monitor.db, "fetch_all", fetch_all)
-    monkeypatch.setattr(monitor.db, "fetch_one",
-                        lambda sql, params=None, **k: {"n": 1} if params and params[0] in state["open"] else {"n": 0})
+    def fetch_one(sql, params=None, **k):
+        state["sqls"].append(sql)
+        return {"n": 1} if params and params[0] in state["open"] else {"n": 0}
+
+    monkeypatch.setattr(monitor.db, "fetch_one", fetch_one)
     monkeypatch.setattr(monitor.db, "execute",
                         lambda sql, params=None, **k: state["executed"].append((sql, params)))
     return state
@@ -154,3 +157,53 @@ def test_signals_exclude_observations_made_during_a_test_injection(fake_db):
     assert "healing.fault_injection" in sql and "run_id IS NOT NULL" in sql, sql
     # 주입 구간과 겹치는 관측만 빼야 한다 — 주입 전후의 실제 장애는 그대로 사건이 된다
     assert "injected_at" in sql and "cleared_at" in sql
+
+
+# --- 폴링으로 직접 관측한 장애 (F-3) ----------------------------------------------------------
+# 메트릭을 세어 판정하는 경로와 달리, 헬스체크 실패는 Monitor 가 **직접 관측**한다.
+# 사건은 같은 역할이 만들지만 입구가 둘이다 — pending_signals(메트릭) · open_incident_for(폴링).
+def test_open_incident_for_a_polled_fault_is_a_real_incident(fake_db):
+    incident_id = monitor.open_incident_for(
+        "WORKER_DOWN", "moa-a-backend-1", label="처리 프로세스 중단",
+        detection_metric="conn_fail_count", evidence=["/ready 연속 2회 실패"])
+    assert incident_id and incident_id.startswith("INC-")
+    (sql, _), = [x for x in fake_db["executed"] if "INSERT INTO healing.incident" in x[0]]
+    assert "false" in sql and "injected_at" not in sql
+
+
+def test_open_incident_for_does_not_duplicate_an_open_one(fake_db):
+    fake_db["open"].add("WORKER_DOWN")
+    assert monitor.open_incident_for("WORKER_DOWN", "moa-a-backend-1", label="x",
+                                     detection_metric="conn_fail_count", evidence=[]) is None
+    assert [x for x in fake_db["executed"] if "INSERT INTO healing.incident" in x[0]] == []
+
+
+def test_test_injection_active_looks_only_at_workflow_injections(fake_db):
+    monitor.test_injection_active("moa-a-backend-1")
+    sql = fake_db["sqls"][-1] if fake_db["sqls"] else ""
+    # 대시보드 주입(run_id IS NULL)과 시험 주입(run_id IS NOT NULL)을 가른다
+    assert "healing.fault_injection" in sql and "run_id IS NOT NULL" in sql
+    assert "cleared_at IS NULL" in sql
+
+
+# --- 재시작 상한 (PRD 5.6 F-3 "10분 내 재시작 2회") --------------------------------------------
+# 상한이 없으면 죽은 채로 올라오지 않는 컨테이너를 영원히 재시작한다 — 폭주 방어의 일부다.
+def test_restart_is_allowed_until_the_limit(monkeypatch):
+    assert monitor.restart_allowed([], now=1000.0) is True
+    assert monitor.restart_allowed([990.0], now=1000.0) is True
+    assert monitor.restart_allowed([980.0, 990.0], now=1000.0) is False
+
+
+def test_restarts_outside_the_window_do_not_count(monkeypatch):
+    old = 1000.0 - monitor.RESTART_WINDOW_SEC - 1
+    assert monitor.restart_allowed([old, old], now=1000.0) is True
+
+
+# --- 자동 복구를 했다고 거짓으로 적지 않는다 ----------------------------------------------------
+def test_agent_exception_is_not_claimed_as_auto_recovered():
+    """AGENT_EXCEPTION 정책은 "체크포인트부터 1회 재실행"인데 업무 층에 그 재실행이 없다.
+
+    자동 복구했다고 적으면 거짓이고 SC-4 무인 복구율이 부풀려진다 — 담당자 확인으로 넘긴다.
+    """
+    assert "AGENT_EXCEPTION" not in monitor.AUTO_RECOVERABLE
+    assert {"DEP_HTTP_5XX", "DEP_TIMEOUT", "AGENT_OUTPUT_INVALID", "WORKER_DOWN"} <= monitor.AUTO_RECOVERABLE

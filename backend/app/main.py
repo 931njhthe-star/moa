@@ -19,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config, db, envelope, logging_setup
 from app.api import debug, health, intake, ops, order, review
-from app.services import history
+from app.services import history, metrics
 
 logging_setup.setup()
 if config.OPS_PASSWORD_IS_DEFAULT:
@@ -58,6 +58,12 @@ async def trace_and_log(request: Request, call_next):
     except Exception as exc:       # noqa: BLE001 — 어떤 예외든 포장된 500 으로 나간다
         error = f"{type(exc).__name__}: {exc}"[:500]
         response = envelope.internal_error(type(exc).__name__).response()
+        # 5.6.1 에이전트 실행(FT-02) — 처리되지 않은 예외 1회가 사건 판정 조건이다.
+        # 동기 DB 쓰기를 이벤트 루프에서 돌리면 백엔드가 그 동안 모든 요청을 못 받는다
+        # (2026-11-06 preflight 에서 실측) — history 와 같이 executor 로 보낸다
+        asyncio.get_running_loop().run_in_executor(
+            None, lambda: metrics.record("agent_error_count", "agent_process", 1,
+                                         threshold=1, breached=True, trace_id=trace_id))
     finally:
         envelope.current_trace.reset(token)
     duration_ms = int((time.monotonic() - started) * 1000)

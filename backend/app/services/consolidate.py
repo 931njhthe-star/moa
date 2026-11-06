@@ -9,10 +9,12 @@
 **양쪽 뒤에** 똑같이 걸린다(N-04). LLM 프롬프트(classify.md)도 같은 판단을 하도록 고쳤지만,
 확률적으로 동작하므로 규칙이 마지막 방어선이다.
 
-세 가지만 한다. 메뉴를 고르거나 금액을 만지지 않는다.
+다음만 한다. 메뉴를 고르거나 금액을 만지지 않는다.
   1 주문이 아닌 말은 항목을 만들지 않는다        add  -> ignore   (보고 2 · 7번)
   2 메뉴 없이 사양만 말한 것은 앞 주문의 변경이다  add  -> update  (보고 8번)
   3 자기 주문을 가리키며 사양만 말한 잡담도 변경이다 ignore -> update (보고 8번 · 규칙 해석 경로)
+  4 매장 · 장소만 알린 말은 주문이 아니다          add  -> ignore   (QA MOA-CORE-002)
+  5 방금 주문한 사람의 확답("네 그걸로 할게요")은 그 주문의 확인이다 add -> confirm (QA MOA-CORE-001)
 """
 
 import re
@@ -75,28 +77,54 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
                         for i in e.get("items") or [])}
     last_add: dict[str, str] = {}          # 사람 -> 그 사람의 마지막 add 메시지 id
     person_menus: dict[str, set[str]] = {}  # 사람 -> 지금까지 주문한 메뉴 id (추가 · 변경 구분용)
+    last_orderer: str | None = None         # 바로 앞 주문(add)을 낸 사람 — "그걸로"가 가리키는 주문의 주인
+    aliases = store_aliases() if any(e.get("event_type") == "add" for e in events) else []
     for event in events:
         kind = event.get("event_type")
         person = event.get("person") or ""
         text = event.get("_raw_text") or ""
+        if kind == "add" and event.get("items"):
+            orderer_before, last_orderer = last_orderer, person
+        else:
+            orderer_before = last_orderer
 
         if kind == "add":
             if not intake._without_filler(text):
                 # "넵" · "ㅇㅇ" · "좋아요" — 맞장구뿐인 말은 주문이 아니다(2026-11-05 2차 보고 5번).
                 # 앞뒤 문맥으로 주문이 되는 경우는 참조 표현("저도" · "그걸로")이 있고, 그것은 군말이 아니다
                 _to_ignore(event, text)
+                last_orderer = orderer_before
+                continue
+            if store_only(text, aliases):
+                # "메가커피에서 시킬게요" · "스벅에서 시킬게요" — 매장 · 장소만 알린 말이다(QA MOA-CORE-002).
+                # 주문 동사가 있어 add 로 올라왔고, 메뉴가 없으니 미등록 주문(확인 필요)이 되어 잔 수가 늘고
+                # 전체 금액이 미정이 됐다. 매장 판별은 따로 한다(brand) — 여기서는 주문 행만 막는다
+                _to_ignore(event, text)
+                event["is_reference"] = False          # 메뉴 근거가 아니다 — "그걸로"가 이 말을 가리키지 않게
+                event["consolidated"] = "store_notice"
+                last_orderer = orderer_before
                 continue
             signals = {menu_signal(i, brand_id=brand_id, menu_version=menu_version)
                        for i in event.get("items") or []}
+            if signals == {"reference"} and person in last_add and orderer_before == person \
+                    and _settles(event, text):
+                # "네 그걸로 할게요" — 방금 주문한 사람이 **자기 주문**을 확인하는 말이다(QA MOA-CORE-001).
+                # 참조 주문으로 읽으면 같은 메뉴가 한 잔 더 생긴다(라떼 1잔 5,200원 → 2잔 10,400원).
+                # 새 참여자의 "저도 그걸로"는 person 이 달라 여기 오지 않고, "그걸로 한 잔 더"는 _settles 가 거른다
+                _to_confirm(event, last_add[person])
+                last_orderer = orderer_before
+                continue
             if "menu" not in signals and (intake.TALLY.search(text) or _PERMISSION.search(text)):
                 # "일단 10잔으로 확인되네요" · "혹시 저도 시켜도 되나요?" — 집계 · 허락 묻기다(5차 보고).
                 # 메뉴를 말하지 않았으면 주문을 만들지 않는다. 메뉴를 말했으면("저도 라떼 시켜도 되나요") 주문이다
                 _to_ignore(event, text)
+                last_orderer = orderer_before
                 continue
             if signals == {"reference"} and person in last_add and not intake.order_pattern(text):
                 # "ㅋㅋㅋㅋ 저도 고민되네요" — 이미 주문한 사람의 "저도"는 참조 주문이 아니라 맞장구다(5차 보고).
                 # 앞 메뉴를 끌어와 한 잔이 늘었다. 한 잔 더라면 "저도 하나 더요"처럼 주문 문형이 붙는다
                 _to_ignore(event, text)
+                last_orderer = orderer_before
                 continue
             if not signals or signals == {"none"}:
                 if intake.order_pattern(text) or (person not in orderers and _bare_menu(text)):
@@ -106,13 +134,16 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
                     last_add[person] = event["message_id"]
                     continue
                 _to_ignore(event, text)
+                last_orderer = orderer_before
                 continue
             if signals == {"option"} and person in last_add:
                 _to_update(event, last_add[person])
+                last_orderer = orderer_before
                 continue
             if person in last_add and _LOOKBACK.search(text) and _changes_spec(event):
                 # 앞 주문을 되짚으며 사양을 더하거나 바꾸는 말 — 새 잔을 만들지 않는다(보고 2번)
                 _to_update(event, last_add[person], kind="lookback_update")
+                last_orderer = orderer_before
                 continue
             last_add[person] = event["message_id"]
             person_menus.setdefault(person, set()).update(
@@ -133,6 +164,7 @@ def consolidate(events: list[dict], *, brand_id: str, menu_version: str) -> list
             event["target_message_id"] = None
             event["consolidated"] = "one_more_cup"
             last_add[person] = event["message_id"]
+            last_orderer = person
             person_menus.setdefault(person, set()).update(
                 _menus_of(event, brand_id=brand_id, menu_version=menu_version))
             continue
@@ -223,6 +255,61 @@ def _bare_menu(text: str) -> bool:
         return not brand_service._find(hit.group("name"), brand_service._dictionary())
     except Exception:       # 매장 사전을 못 읽어도 주문을 버리지 않는 쪽으로 둔다
         return True
+
+
+# --- 매장 안내 (QA MOA-CORE-002) ------------------------------------------------------------
+# 매장 이름을 뗀 뒤 이것만 남으면 매장 · 장소를 알린 말이다 — "메가커피에서 시킬게요" · "스벅으로 주문할게요".
+#   메뉴 · 수량이 하나라도 남으면("스벅에서 아아 한 잔 시킬게요") 주문이다
+_STORE_PARTICLE = r"(?:에서|으로|로|에|은|는|도|이|가|이요|요|이에요|예요|입니다)"
+_STORE_REST = re.compile(
+    # 긴 낱말을 먼저 둔다 — "이번"이 먼저 걸리면 "이번엔"의 "엔"이 남는다
+    r"(?:오늘은|오늘|이번에는|이번엔|이번|여기|거기|저희|우리|다들|다\s*같이|같이|그냥|그럼|일단|"
+    r"시킬게요|시킬게|시킬래요|시킬래|시켜요|시킵니다|시키겠습니다|시킬까요|"
+    r"주문할게요|주문할게|주문할래요|주문해요|주문합니다|주문하겠습니다|주문|"
+    r"할게요|할게|할래요|해요|갈게요|갈게|가요|갑니다|가겠습니다|정했어요|정할게요|"
+    + _STORE_PARTICLE + r"|[\s,.!?~^…])+")
+
+
+def store_aliases() -> list[str]:
+    """매장 사전의 별칭 — 긴 것부터. 사전을 못 읽으면 빈 목록(주문을 버리지 않는 쪽)."""
+    from app.services import brand as brand_service
+
+    try:
+        return sorted({row["alias"] for row in brand_service._dictionary()}, key=len, reverse=True)
+    except Exception:
+        return []
+
+
+def store_only(text: str, aliases: list[str] | None = None) -> bool:
+    """매장 · 장소만 알리고 메뉴도 수량도 없는 말인가 (QA MOA-CORE-002)."""
+    body = intake._without_filler(text or "")
+    found = False
+    for alias in (store_aliases() if aliases is None else aliases):
+        pattern = re.compile(re.escape(alias).replace(r"\ ", r"\s*"), re.IGNORECASE)
+        if pattern.search(body):
+            body, found = pattern.sub(" ", body), True
+    return found and not _STORE_REST.sub("", body).strip()
+
+
+# --- 확답 (QA MOA-CORE-001) ----------------------------------------------------------------
+def _settles(event: dict, text: str) -> bool:
+    """자기 주문을 확인하는 말인가 — 한 잔 더 · 두 잔 같은 **보탬 수량**이 없어야 한다.
+
+    "네 그걸로 할게요"는 확인이다. "그걸로 한 잔 더 주세요" · "그걸로 두 잔이요"는 추가 주문이다.
+    """
+    if _ADD_MORE.search(text or ""):
+        return False
+    return all((item.get("quantity") or 1) <= 1 for item in event.get("items") or [])
+
+
+def _to_confirm(event: dict, target_message_id: str) -> None:
+    event["event_type"] = event["route"] = "confirm"
+    event["items"] = []
+    event["target_message_id"] = target_message_id
+    event["target_unclear"] = False
+    event["target_hint"] = intake._menu_text(event.get("_raw_text") or "")
+    event["options"] = {}
+    event["consolidated"] = "settles_own_order"
 
 
 # 주문해도 되는지 묻는 말 — 주문이 아니라 허락을 구하는 말이다 (5차 보고 · "혹시 저도 시켜도 되나요?")

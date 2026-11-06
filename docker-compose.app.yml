@@ -13,6 +13,15 @@
 #
 # 처음 한 번 DB 스키마 · 시드 (공용 db 가 healthy 인 뒤):
 #   docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py
+# Docker 표준 출력 로그(docker logs) 크기 제한 — 컨테이너마다 10MB × 3개 = 최대 30MB (10개 합계 300MB)
+#   게이트웨이 · 앱이 요청마다 한 줄씩 남기므로 제한이 없으면 디스크를 계속 쓴다(장애 실험 25회 동안 특히).
+#   앱 로그 원본(14일 보관)은 호스트 ./logs/<컨테이너> 파일이다 (D-03 1.5) — 여기는 실시간 확인용
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   backend:
     build: ./backend
@@ -34,6 +43,7 @@ services:
       - moa_core
     restart: "no"          # F-3 주입 대상 — 재시작은 healing Recovery Worker 의 허용목록 액션만 (R-14)
     mem_limit: 384m       # 실측 약 60MB (유휴) — 분석 중 LangGraph · LLM 응답만큼 는다
+    logging: *default-logging
     healthcheck:
       # slim 이미지에는 curl 이 없어서 파이썬으로 /health 를 확인한다
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -52,6 +62,7 @@ services:
       - default
     restart: unless-stopped
     mem_limit: 256m       # 실측 약 46MB (유휴) — 접속 세션마다 는다
+    logging: *default-logging
     depends_on:
       backend:
         condition: service_healthy

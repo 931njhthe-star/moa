@@ -10,3 +10,5 @@ __pycache__/
 *accessKeys.csv
 # 컨테이너 로그를 호스트에 남기는 폴더 (docker-compose 의 ./logs/<컨테이너>)
 logs/
+# DB 백업 (scripts/db-backup.sh)
+backups/

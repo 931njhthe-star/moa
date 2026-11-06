@@ -74,8 +74,12 @@ done
 # ---------- DEP-1 매니페스트 · 시크릿 ----------
 echo "DEP-1 매니페스트 · 시크릿" >&2
 pub=$(docker ps --filter name='^moa-' --format '{{.Names}} {{.Ports}}' | grep -E '0\.0\.0\.0:|\[::\]:' | awk '{print $1}' | sort -u | tr '\n' ' ')
-[ "$pub" = "$GATEWAY " ] && record DEP-1 "밖으로 열린 포트는 게이트웨이뿐" PASS "${pub}" \
-                        || record DEP-1 "밖으로 열린 포트는 게이트웨이뿐" FAIL "공개: ${pub:-없음}"
+# 운영 대시보드 스택(moa-ops, docker-compose.ops.yml)이 떠 있으면 그 frontend(:8502)도 허용한다
+OPS_FRONT=moa-ops-frontend-1
+allowed="$GATEWAY "
+docker ps --format '{{.Names}}' | grep -qx "$OPS_FRONT" && allowed=$(printf '%s\n' "$GATEWAY" "$OPS_FRONT" | sort | tr '\n' ' ')
+[ "$pub" = "$allowed" ] && record DEP-1 "밖으로 열린 포트는 게이트웨이(+운영 대시보드)뿐" PASS "${pub}" \
+                        || record DEP-1 "밖으로 열린 포트는 게이트웨이(+운영 대시보드)뿐" FAIL "공개: ${pub:-없음}"
 nolimit=$(for c in $(docker ps --filter name='^moa-' --format '{{.Names}}'); do
   [ "$(docker inspect -f '{{.HostConfig.Memory}}' "$c")" = 0 ] && echo -n "$c "; done)
 [ -z "$nolimit" ] && record DEP-1 "모든 컨테이너 메모리 제한" PASS "$(docker ps --filter name='^moa-' -q | wc -l)개" \
@@ -84,6 +88,9 @@ bad=""
 for c in moa-a-backend-1 moa-b-backend-1 moa-core-interpreter-primary-1; do
   [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$c")" = no ] || bad+="$c "; done
 for c in moa-a-frontend-1 moa-b-frontend-1 moa-core-interpreter-backup-1 $GATEWAY $DB; do
+  [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$c")" = unless-stopped ] || bad+="$c "; done
+for c in moa-ops-backend-1 "$OPS_FRONT"; do   # 운영 대시보드 스택 — 있으면 늘 살아 있어야 한다
+  docker ps -a --format '{{.Names}}' | grep -qx "$c" || continue
   [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$c")" = unless-stopped ] || bad+="$c "; done
 [ -z "$bad" ] && record DEP-1 "restart 정책 (주입 대상 no · 나머지 unless-stopped)" PASS "R-14" \
               || record DEP-1 "restart 정책" FAIL "다름: $bad"

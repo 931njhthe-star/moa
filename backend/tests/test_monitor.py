@@ -1,0 +1,125 @@
+"""상시 감시 — 업무 층이 남긴 메트릭을 Monitor 가 읽어 사건을 만든다 (PRD 5.6.1 · FR-013).
+
+지금까지 healing.incident 는 **장애 시험 워크플로 안에서만** 만들어졌다(is_verification_run=true).
+운영 중 저절로 난 장애는 탐지도 기록도 되지 않아 대시보드 E 블록과 지표가 비어 있었다.
+판정 조건은 PRD 5.6.1 정본이다 — 5xx 연속 2회 · 호출 5초 초과 1회 · 스키마 검증 실패 1회.
+"""
+import pytest
+
+from app.services import monitor
+
+
+def _metric(metric_key, target, mid, breached=True):
+    return {"id": mid, "metric_key": metric_key, "target": target, "value": 1,
+            "breached": breached, "measured_at": "2026-11-06T13:00:00+00:00", "trace_id": f"tr_{mid}"}
+
+
+@pytest.fixture
+def fake_db(monkeypatch):
+    state = {"rows": [], "open": set(), "executed": []}
+    monkeypatch.setattr(monitor.db, "fetch_all", lambda sql, params=None, **k: list(state["rows"]))
+    monkeypatch.setattr(monitor.db, "fetch_one",
+                        lambda sql, params=None, **k: {"n": 1} if params and params[0] in state["open"] else {"n": 0})
+    monkeypatch.setattr(monitor.db, "execute",
+                        lambda sql, params=None, **k: state["executed"].append((sql, params)))
+    return state
+
+
+# --- 판정 조건 (PRD 5.6.1) ---------------------------------------------------------------------
+def test_five_hundred_needs_two_in_a_row(fake_db):
+    fake_db["rows"] = [_metric("dep_5xx_ratio", "order_interpreter_primary", 1)]
+    assert monitor.pending_signals() == []                 # 1회로는 사건이 아니다
+
+    fake_db["rows"].append(_metric("dep_5xx_ratio", "order_interpreter_primary", 2))
+    (signal,) = monitor.pending_signals()
+    assert signal["fault_code"] == "DEP_HTTP_5XX"
+    assert signal["target"] == "order_interpreter_primary"
+    assert signal["metric_ids"] == [1, 2]
+
+
+def test_timeout_fires_on_the_first_observation(fake_db):
+    # PRD 5.6.1 API 판정 조건 "호출 5초 초과" — 연속 조건이 없다
+    fake_db["rows"] = [_metric("timeout_count", "order_interpreter_primary", 7)]
+    (signal,) = monitor.pending_signals()
+    assert signal["fault_code"] == "DEP_TIMEOUT" and signal["metric_ids"] == [7]
+
+
+def test_schema_failure_fires_on_the_first_observation(fake_db):
+    fake_db["rows"] = [_metric("schema_error_rate", "order_interpreter_backup", 9)]
+    (signal,) = monitor.pending_signals()
+    assert signal["fault_code"] == "AGENT_OUTPUT_INVALID"
+
+
+def test_latency_alone_is_not_an_incident(fake_db):
+    # dep_latency_ms 는 추세용이다. 넘었더라도 timeout_count 가 따로 남는다
+    fake_db["rows"] = [_metric("dep_latency_ms", "order_interpreter_primary", 3),
+                       _metric("dep_latency_ms", "order_interpreter_primary", 4)]
+    assert monitor.pending_signals() == []
+
+
+def test_targets_are_counted_apart(fake_db):
+    fake_db["rows"] = [_metric("dep_5xx_ratio", "order_interpreter_primary", 1),
+                       _metric("dep_5xx_ratio", "order_interpreter_backup", 2)]
+    assert monitor.pending_signals() == []                 # 대상마다 1회씩 — 연속 2회가 아니다
+
+
+def test_an_already_open_incident_is_not_duplicated(fake_db):
+    fake_db["rows"] = [_metric("timeout_count", "order_interpreter_primary", 1)]
+    fake_db["open"].add("DEP_TIMEOUT")
+    assert monitor.pending_signals() == []                 # 같은 장애가 열려 있으면 증거만 쌓는다
+
+
+# --- 사건 생성 -------------------------------------------------------------------------------
+def test_created_incident_is_a_real_one_not_a_verification_run(fake_db):
+    fake_db["rows"] = [_metric("timeout_count", "order_interpreter_primary", 5)]
+    (signal,) = monitor.pending_signals()
+    incident_id = monitor.open_incident(signal)
+
+    assert incident_id.startswith("INC-")
+    inserts = [sql for sql, _ in fake_db["executed"] if "INSERT INTO healing.incident" in sql]
+    assert len(inserts) == 1
+    # is_verification_run=false 여야 지표 뷰(04_views.sql)와 E 블록이 실제 사건으로 센다.
+    # true 로 들어가면 시험 사건과 섞여 복구율이 오염된다
+    assert "false" in inserts[0]
+    # 주입이 아니라 실제 장애다 — injected_at 은 없다
+    assert "injected_at" not in inserts[0]
+
+
+def test_consumed_metrics_are_tied_to_the_incident(fake_db):
+    fake_db["rows"] = [_metric("dep_5xx_ratio", "order_interpreter_primary", 11),
+                       _metric("dep_5xx_ratio", "order_interpreter_primary", 12)]
+    (signal,) = monitor.pending_signals()
+    monitor.open_incident(signal)
+    updates = [(sql, params) for sql, params in fake_db["executed"]
+               if "UPDATE healing.runtime_metric" in sql]
+    assert len(updates) == 1
+    # 쓴 행에 사건을 묶어 둬야 다음 순회에서 같은 관측을 또 세지 않는다
+    assert [11, 12] == list(updates[0][1][1])
+
+
+# --- 사건 닫기 — 칸 이름을 고정한다 -------------------------------------------------------------
+# 실측 결함 2026-11-06: healing.incident 에 `recovered_at` 이 있다고 가정해 UPDATE 가 깨졌다
+# (UndefinedColumn). 실제 칸은 resolved_at(복구 완료) · failed_at · escalated_at 이다.
+# 사건 생성은 됐는데 닫히지 않아 대시보드에 "복구 중"으로 영원히 남았다.
+def test_closing_a_recovered_incident_sets_resolved_at(fake_db):
+    monitor.close_incident("INC-1", recovered=True)
+    (sql, params), = [x for x in fake_db["executed"] if "UPDATE healing.incident" in x[0]]
+    flat = sql.replace(" ", "")
+    assert "status='recovered'" in flat and "resolved_at=NOW()" in flat
+    assert "failed_at" not in flat and "recovered_at=NOW()" not in flat
+    assert params[-1] == "INC-1"
+
+
+def test_closing_a_failed_incident_records_failure_and_escalation(fake_db):
+    monitor.close_incident("INC-2", recovered=False)
+    (sql, _), = [x for x in fake_db["executed"] if "UPDATE healing.incident" in x[0]]
+    flat = sql.replace(" ", "")
+    assert "status='failed'" in flat and "failed_at=NOW()" in flat and "escalated_at=NOW()" in flat
+    assert "resolved_at=NOW()" not in flat      # 실패한 사건에 복구 시각을 넣지 않는다
+
+
+def test_closing_keeps_the_first_recovery_start(fake_db):
+    # 복구 시작 시각은 처음 값을 지킨다 — MTTR 구간이 뒤로 밀리면 안 된다
+    monitor.close_incident("INC-3", recovered=True)
+    (sql, _), = [x for x in fake_db["executed"] if "UPDATE healing.incident" in x[0]]
+    assert "COALESCE(recovery_started_at" in sql

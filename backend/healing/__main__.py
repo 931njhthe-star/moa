@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg
 
-from app import config, db, ids
+from app import config, db, ids, logging_setup
 from app.contracts import TASK_CONTRACTS
 from app.interpreter_client import InterpreterError, interpret_resilient
-from app.services import incidents, menu, workflows
+from app.services import incidents, menu, monitor, workflows
 
 LOG = logging.getLogger("moa.healing")
 WORKER_ID = os.getenv("HOSTNAME") or socket.gethostname()
@@ -570,6 +570,37 @@ def _run(run: dict) -> None:
                    (run_id, WORKER_ID), role="healing")
 
 
+CODE_FAULT = {code: fault for fault, code in F_CODE.items()}
+
+
+def _close_incident(incident_id: str, *, recovered: bool, detail: str) -> None:
+    monitor.close_incident(incident_id, recovered=recovered)
+    if recovered:
+        logging_setup.log("recovery_verified", incident_id=incident_id, detail=detail)
+    else:
+        logging_setup.log("escalated", level="warning", incident_id=incident_id, detail=detail)
+
+
+def _monitor() -> None:
+    """상시 감시 — 업무 층이 남긴 메트릭으로 **실제** 사건을 만들고 복구를 독립 검증한다.
+
+    요청 안 복구(재시도 · 대체 전환 · 폴백)는 업무 층이 이미 했다(PRD 5.3 v1.1 복구 경계).
+    여기서 하는 일은 사건을 남기고, 지금 정상인지를 합성 요청으로 **독립 검증**한 뒤 닫는 것이다 —
+    복구한 쪽이 스스로 "성공"이라고 판정하지 못하게 한다(5.3 Verification 독립).
+    """
+    for signal in monitor.pending_signals():
+        fault = CODE_FAULT.get(signal["fault_code"])
+        if fault is None:
+            continue
+        incident_id = monitor.open_incident(signal)
+        logging_setup.log("incident_detected", incident_id=incident_id,
+                          fault_code=signal["fault_code"], target=signal["target"],
+                          detection_metric=signal["metric_key"], trace_id=signal.get("trace_id"))
+        logging_setup.log("recovery_started", incident_id=incident_id, fault_code=signal["fault_code"])
+        ok, detail, _ = _synthetic_interpreter_request(fault, signal["target"], 1, incident_id)
+        _close_incident(incident_id, recovered=ok, detail=detail)
+
+
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     if config.ENVIRONMENT != "lab" and os.getenv("HEALING_ENABLE_PRODUCTION_RECOVERY", "0") != "1":
@@ -577,6 +608,7 @@ def main() -> None:
     while True:
         try:
             _heartbeat()
+            _monitor()                    # 상시 감시는 시험 워크플로와 **나란히** 돈다
             run = _claim() if config.ENVIRONMENT == "lab" else None
             if run:
                 _run(run)

@@ -318,7 +318,7 @@ docker compose -f docker-compose.app.yml -f docker-compose.ops.yml -p moa-ops up
 | 공용 `socket-proxy`                       |        1 | `moa_core` 전용, 외부 포트 없음                                                   | Docker 소켓 앞에서 허용목록 컨테이너의 **상태 조회 · 재시작만** 통과시킨다. healing만 부른다 · `unless-stopped`                     |
 | 앱 `frontend`                             | 스택당 1 | 자기 스택 네트워크 전용, 포트 열지 않음                                             | Streamlit 화면. 같은 스택의 `backend`만 부른다 · `unless-stopped`                                                                        |
 | 앱 `backend`                              | 스택당 1 | 자기 스택 네트워크 + `moa_core`                                                   | FastAPI · 업무 층 에이전트 · `restart: "no"`(F-3 주입 대상, 재시작은 Recovery Worker의 허용목록 액션만)                                   |
-| 운영 `frontend` · `backend` (`moa-ops`) |     각 1 | `moa-ops_default` + backend는 `moa_core`. frontend만 외부 `8502`(운영자 IP만)         | 운영 대시보드 전용. 게이트웨이를 거치지 않고 앱 A · B와 장애를 같이 겪지 않는다. 장애 주입 · healing 허용목록 밖 · 둘 다 `unless-stopped`  |
+| 운영 `frontend` · `backend` (`moa-ops`) |     각 1 | `moa-ops_default` + backend는 `moa_core`. frontend만 외부 `8502`(모두에게 공개)       | 운영 대시보드 전용. 게이트웨이를 거치지 않고 앱 A · B와 장애를 같이 겪지 않는다. 장애 주입 · healing 허용목록 밖 · 둘 다 `unless-stopped`  |
 
 - **DB는 하나다.** `db` · 볼륨을 앱 파일에 두지 않는다. 앱 파일에 두면 프로젝트마다 DB가 따로 생겨 전환 뒤 세션 복원과 SC-5가 깨진다
 - **스택끼리 섞이지 않게 한다.** frontend는 자기 스택 네트워크에만 붙여 같은 스택의 `backend`만 보이게 한다. 게이트웨이와 healing은 서비스 이름이 아니라 컨테이너 이름(`moa-a-frontend-1` · `moa-a-backend-1` 등)으로 대상을 지정한다
@@ -584,7 +584,7 @@ flowchart LR
 | 보안          | 관리 링크는 추측 불가 토큰, 공유 카드 · 로그에 토큰 원문 없음. Recovery Worker에 광범위한 Docker 제어 권한을 주지 않는다                                                                                                             |
 | 운영 대시보드 | 비밀번호 하나로 진입, 값은 `.env`의 `OPS_DASHBOARD_PASSWORD`에만. 같은 값으로 서비스 진입 게이트(G-0)도 연다(3절)                                                                                                                 |
 | 추적          | 모든 사건을 `incident_id` · `trace_id`로 추적, UTC 밀리초 로그 14일 보관. 비밀값 · 원문 대화 · 프롬프트 전문은 로그에 남기지 않는다                                                                                            |
-| 배포 구성     | Docker Engine 1대 · `docker-compose.core.yml` 1벌 + `docker-compose.app.yml` 2벌(`moa-a` · `moa-b`) + 운영 대시보드 전용 1벌(`moa-ops`), 외부 포트는 8501(게이트웨이)과 8502(운영 대시보드 · 운영자 IP만), 비밀값은 `.env`만, 업무 처리 컨테이너는 `restart: "no"`, 컨테이너마다 메모리 제한 |
+| 배포 구성     | Docker Engine 1대 · `docker-compose.core.yml` 1벌 + `docker-compose.app.yml` 2벌(`moa-a` · `moa-b`) + 운영 대시보드 전용 1벌(`moa-ops`), 외부 포트는 8501(게이트웨이)과 8502(운영 대시보드 · 모두에게 공개, 비밀번호로 보호), 비밀값은 `.env`만, 업무 처리 컨테이너는 `restart: "no"`, 컨테이너마다 메모리 제한 |
 | 사용성        | 모바일에서도 사용 가능, 해요체 · 쉬운 말, 내부 용어 노출 0건, 처음 쓰는 5명 중 4명 이상이 도움말 없이 첫 정리 완료                                                                                                                   |
 
 ---

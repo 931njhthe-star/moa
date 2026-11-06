@@ -19,5 +19,7 @@ services:
     restart: unless-stopped   # 장애 주입 대상이 아니다 — 늘 살아 있게 (앱 스택은 "no", R-14)
 
   frontend:
+    environment:
+      MOA_OPS_ONLY: "1"       # 어느 주소로 와도 /ops · 진입 게이트 없이 운영 비밀번호 한 번 (frontend/app.py)
     ports:
       - "8502:8501"           # 게이트웨이(8501)를 거치지 않고 바로 연다

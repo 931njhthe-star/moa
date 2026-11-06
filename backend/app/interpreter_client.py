@@ -137,10 +137,17 @@ def interpret_resilient(task: str, messages: list[dict], context: dict, *, servi
         nonlocal attempt_no
         attempt_no += 1
         call_started = time.monotonic()
+        # 지연 임포트 — _save 가 history 를 그렇게 가져오는 것과 같은 이유다(순환 임포트 회피)
+        from app.services import metrics
         try:
             result = interpret(task, messages, context, service=target_service, trace_id=trace_id,
                                session_id=session_id, client=client, timeout=timeout)
         except InterpreterError as exc:
+            # 5.6.1 감지 메트릭 — 업무 층은 관측한 사실만 적는다(PRD 5.3 복구 경계).
+            # 사건을 만들지 않는다 — Monitor 가 이 행들을 세어 판정한다
+            metrics.observe_interpreter(exc.fault_code, target_service,
+                                        int((time.monotonic() - call_started) * 1000),
+                                        trace_id=trace_id)
             if attempt_observer:
                 try:
                     attempt_observer({"attempt_no": attempt_no, "service": target_service,
@@ -149,6 +156,8 @@ def interpret_resilient(task: str, messages: list[dict], context: dict, *, servi
                 except Exception:
                     pass
             raise
+        metrics.observe_interpreter(None, target_service,
+                                    int((time.monotonic() - call_started) * 1000), trace_id=trace_id)
         if attempt_observer:
             try:
                 attempt_observer({"attempt_no": attempt_no, "service": target_service,

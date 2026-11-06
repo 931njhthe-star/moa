@@ -11,12 +11,15 @@
 #   - healing 허용목록(moa-a/b-*)에 없다 → 장애 주입 · 자동 재시작 대상이 아니다
 #
 # 공용 스택(db)이 죽으면 이 대시보드도 데이터를 못 읽는다 — 그건 서비스 전체가 멈춘 경우다
-# 서버 방화벽(보안 그룹)에서 8502 를 열되 운영자 IP 로 좁힌다
+# 서버 방화벽(보안 그룹)에서 8502 를 모두에게 연다 — 8501 의 [운영 대시보드] 버튼과 같은 비밀번호 · 같은 화면이다
+#   로그인 시도 제한이 없으므로 backend/.env 의 OPS_DASHBOARD_PASSWORD 는 12자 이상으로 둔다
 
 services:
   backend:
     restart: unless-stopped   # 장애 주입 대상이 아니다 — 늘 살아 있게 (앱 스택은 "no", R-14)
 
   frontend:
+    environment:
+      MOA_OPS_ONLY: "1"       # 어느 주소로 와도 /ops · 진입 게이트 없이 운영 비밀번호 한 번 (frontend/app.py)
     ports:
       - "8502:8501"           # 게이트웨이(8501)를 거치지 않고 바로 연다

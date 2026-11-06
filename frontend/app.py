@@ -8,6 +8,8 @@
 #
 # 사이드바 네비게이션을 쓰지 않는다 — 화면 제목 · 사이드바 · 진행 막대가 없다(P-06 U-2).
 # 이동은 각 화면의 하단 바 보조 버튼 · 주 버튼과 헤더 [운영 대시보드] · [나가기]로만 한다.
+import os
+
 import streamlit as st
 
 from moa import copy, dialogs, layout, nav, state
@@ -17,6 +19,16 @@ from moa import copy, dialogs, layout, nav, state
 st.set_page_config(page_title="Moa", layout="wide", initial_sidebar_state="collapsed")
 
 page = st.navigation(list(nav.pages().values()), position="hidden")
+
+# 운영 대시보드 전용 스택(moa-ops · :8502, docker-compose.ops.yml 이 MOA_OPS_ONLY=1 을 준다)
+# 어느 주소로 들어와도 /ops 로 보내고, 서비스 진입 게이트 없이 O-0 비밀번호 한 번으로 들어간다.
+# 두 문의 비밀번호가 같은 값(OPS_DASHBOARD_PASSWORD)이라 보안 수준은 그대로다.
+# [나가기]는 start 로 가지만 여기서 다시 /ops(O-0)로 돌아온다. 앱 A · B(8501)는 이 값이 없어 그대로다
+if os.getenv("MOA_OPS_ONLY", "").strip() == "1":
+    if page.url_path != "ops":
+        nav.go("ops")
+    page.run()
+    st.stop()
 
 # 서비스 진입 게이트 — 어느 URL로 들어와도 비밀번호를 먼저 받는다(2026-11-05 사용자 요청).
 # O-0(운영 대시보드 비밀번호)과 같은 구성 · 같은 비밀번호(`OPS_DASHBOARD_PASSWORD`)이며, 비교는 서버가 한다.

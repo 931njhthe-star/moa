@@ -15,7 +15,11 @@ name: CI / CD
 
 on:
   push:
-    branches: [main, dev]   # main, dev 브랜치에 push될 때 실행
+    # main, dev 브랜치에 push될 때 실행
+    # demo/ci-fail-* — SC-10 · SC-11 실증 전용(R7.2). dev · main 은 PR 로만 들어가 push 실패가 나지 않으므로
+    #   이 브랜치에 깨진 커밋을 push 해 실패 → report-failure Issue 생성 · 할당을 재현한다.
+    #   deploy 는 main push 에서만 돌아 운영에 영향이 없다. 확인 뒤 브랜치는 지운다
+    branches: [main, dev, "demo/ci-fail-*"]
   pull_request:
     branches: [main, dev]   # main, dev 브랜치로 향하는 PR일 때 실행
 
@@ -269,7 +273,7 @@ jobs:
           aws ec2 revoke-security-group-ingress --group-id "${{ secrets.EC2_SG_ID }}"             --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32"
 
   # CI 실패 → GitHub Issue 자동 생성 · 커밋 작성자에게 할당 (PRD 6.4.3 · SC-11 · v1.9)
-  #   main · dev 로의 push 에서만 만든다 — PR 마다 만들면 작업 중 실패로 이슈가 쌓인다
+  #   main · dev(· 실증용 demo/ci-fail-*)로의 push 에서만 만든다 — PR 마다 만들면 작업 중 실패로 이슈가 쌓인다
   report-failure:
     needs: [changes, lint, test-backend, test-frontend, build]
     if: failure() && github.event_name == 'push'

@@ -18,7 +18,7 @@ import pytest  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 import api_client  # noqa: E402
-from moa import copy, state  # noqa: E402
+from moa import api, copy, state  # noqa: E402
 
 FRONTEND = pathlib.Path(__file__).resolve().parent.parent
 REVIEW = str(FRONTEND / "screens" / "review.py")
@@ -27,6 +27,20 @@ APPLIED = {"kind": "applied", "version": 7, "undo_token": "undo_k_test",
            "text": "김민수 님 주문을 아이스 아메리카노 톨에서 아이스 카페 라떼 톨로 바꿨어요.",
            "changed_item_ids": ["it_01"]}
 SAID = "김민수 아이스 카페 라떼로 바꿔줘"
+
+
+@pytest.fixture(autouse=True)
+def no_backend_down_circuit(monkeypatch):
+    """`api.get` 의 "잠깐 쉬기" 회로를 끈다 — 서버가 없어도 같은 경로를 보려고.
+
+    왜 필요한가: `review.py` 는 채팅 수정 **전에** progress · 주문서 등을 먼저 부른다.
+    이 파일은 `post_message` 만 가로채므로 그 앞 호출들이 서버에 닿지 못하고,
+    `api.get` 은 그때부터 `RETRY_AFTER_SEC` 동안 **호출을 건너뛰고 모의 응답을 돌려준다**.
+    그러면 `post_message` 가 아예 불리지 않아, 이 파일이 보려는
+    "제출 실행에서는 서버를 부르지 않는다"를 가릴 수 없다(모의 말풍선이 대신 떠서 통과처럼 보인다).
+    백엔드가 떠 있는 내 PC 에서는 통과하고 CI 에서만 깨지던 원인이다.
+    """
+    monkeypatch.setattr(api, "RETRY_AFTER_SEC", 0.0)
 
 
 @pytest.fixture

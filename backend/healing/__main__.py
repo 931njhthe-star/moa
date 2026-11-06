@@ -595,6 +595,61 @@ def _ready(target: str, timeout: float = 2.0) -> bool:
         return False
 
 
+DB_EVERY_SEC = 5.0
+_DB_AT = 0.0
+_DB_OUTAGE = monitor.DbOutage()
+
+
+def _db_watch() -> None:
+    """F-6 상시 감시 (필수 FT-03) — DB 를 직접 찔러 보고, 끊긴 구간을 메모리에 보류한다.
+
+    사건 기록이 같은 DB 에 있으므로 끊긴 동안에는 적을 수 없다. 복구된 순간에 보류한
+    탐지 · 복구 시각으로 완결된 사건을 한 번에 적는다. 서비스는 그 사이 메뉴 캐시 폴백으로 산다.
+    여기서는 예외를 밖으로 내지 않는다 — 이 단계가 멈추면 F-6 을 영영 알 수 없다.
+    """
+    global _DB_AT
+    if time.monotonic() - _DB_AT < DB_EVERY_SEC:
+        return
+    _DB_AT = time.monotonic()
+    try:
+        db.fetch_one("SELECT 1 AS ok", role="healing")
+        ok = True
+    except Exception:      # noqa: BLE001 — 어떤 실패든 "지금 못 쓴다"로 본다
+        ok = False
+    if not ok:
+        logging_setup.log("db_unavailable", level="warning", detail="healing 저장소 조회 실패")
+    record = _DB_OUTAGE.observe(ok=ok, now=time.monotonic())
+    if not record:
+        return
+    seconds = record["resolved_at"] - record["detected_at"]
+    try:
+        incident_id = monitor.report_db_outage(
+            record, evidence=[f"healing 저장소 조회 연속 {record['failures']}회 실패",
+                              f"끊긴 구간 약 {seconds:.0f}초"])
+    except Exception:      # noqa: BLE001 — 막 돌아온 DB 가 다시 끊길 수 있다. 다음 순회에 다시 본다
+        LOG.exception("db outage report failed")
+        return
+    if incident_id:
+        logging_setup.log("incident_detected", incident_id=incident_id, fault_code="DB_UNAVAILABLE",
+                          target="menu_store", detection_metric="db_connection_error")
+        logging_setup.log("recovery_verified", incident_id=incident_id,
+                          detail=f"저장소 재연결 확인 · 끊긴 구간 약 {seconds:.0f}초")
+
+
+def _safe(step) -> None:
+    """한 단계의 실패가 나머지를 멈추지 않게 한다.
+
+    DB 장애 중에는 _heartbeat · _monitor · _claim 이 모두 깨진다. 한 줄로 묶어 두면
+    그때 _db_watch 까지 건너뛰어 **F-6 을 탐지할 수 없다**(실측에서 가장 먼저 깨지던 지점).
+    """
+    try:
+        step()
+    except (db.DbUnavailable, psycopg.Error):
+        pass
+    except Exception:      # noqa: BLE001
+        LOG.exception("worker step failed: %s", getattr(step, "__name__", step))
+
+
 def _health_watch() -> None:
     """F-3 상시 감시 — 헬스체크 연속 2회 실패를 처리 프로세스 중단으로 보고 재시작한다.
 
@@ -697,9 +752,10 @@ def main() -> None:
         LOG.warning("lab workflow runner disabled outside ENVIRONMENT=lab")
     while True:
         try:
-            _heartbeat()
-            _monitor()                    # 상시 감시는 시험 워크플로와 **나란히** 돈다
-            _health_watch()               # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
+            _db_watch()                   # 맨 먼저 — DB 가 죽으면 아래 단계가 전부 깨진다
+            _safe(_heartbeat)
+            _safe(_monitor)               # 상시 감시는 시험 워크플로와 **나란히** 돈다
+            _safe(_health_watch)          # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
             run = _claim() if config.ENVIRONMENT == "lab" else None
             if run:
                 _run(run)

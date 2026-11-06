@@ -94,6 +94,12 @@ async def on_api_failure(_: Request, exc: envelope.ApiFailure):
 async def on_db_unavailable(request: Request, exc: db.DbUnavailable):
     logging_setup.log("db_unavailable", level="warning", trace_id=envelope.current_trace.get(),
                       path=request.url.path, detail=str(exc)[:300])
+    # 5.6.1 DB(FT-03) — 연결 오류를 메트릭으로 남긴다. DB 가 죽어 있으면 기록도 실패하는데
+    # 그건 삼켜진다. 그 구간은 healing 의 DbOutage 가 메모리에 보류해 복구 후 적는다
+    asyncio.get_running_loop().run_in_executor(
+        None, lambda: metrics.record("db_connection_error", "menu_store", 1,
+                                     threshold=2, breached=True,
+                                     trace_id=envelope.current_trace.get()))
     return envelope.db_down(str(exc)).response()
 
 

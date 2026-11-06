@@ -26,6 +26,9 @@ _RULES = {
     "schema_error_rate": ("AGENT_OUTPUT_INVALID", 1, "잘못된 결과 형식"),
     # 처리되지 않은 예외 1회로 사건이 된다 (PRD 5.6.1 에이전트 실행 FT-02)
     "agent_error_count": ("AGENT_EXCEPTION", 1, "처리 중 예외"),
+    # 쿼리 2초 초과 1회 (PRD 5.6.1 DB FT-03). 연결 오류는 여기 두지 않는다 —
+    # DB 가 죽은 구간은 기록 자체가 안 되므로 DbOutage 가 메모리에 보류해 복구 후 적는다
+    "slow_query_count": ("DB_UNAVAILABLE", 1, "메뉴 저장소 응답 지연"),
 }
 # F-3(agent_error_count · restart_count)과 F-6(db_connection_error · slow_query_count)은
 # 수집 훅이 들어오는 단계에서 함께 넣는다. 수집이 없는 규칙을 미리 두면 사건이 만들어지지 않거나,
@@ -181,3 +184,55 @@ def restart_allowed(stamps: list[float], *, now: float) -> bool:
 # 부풀려지므로, 기록만 하고 담당자 확인(manual_check)으로 넘긴다.
 AUTO_RECOVERABLE = frozenset({"DEP_HTTP_5XX", "DEP_TIMEOUT", "AGENT_OUTPUT_INVALID",
                               "WORKER_DOWN", "DB_UNAVAILABLE"})
+
+
+# --- F-6 저장소 장애 (필수 FT-03) -------------------------------------------------------------
+DB_FAIL_NEEDED = 2          # PRD 5.6.1 DB 판정 조건 "연결 오류 연속 2회"
+
+
+class DbOutage:
+    """DB 가 죽은 동안의 사건을 **메모리에 보류**하고 복구된 순간에 한 번에 보고한다.
+
+    사건 기록이 같은 DB 에 있으므로 F-6 중에는 INSERT 자체가 불가능하다. 실시간으로 적으려 하면
+    기록이 통째로 사라지고 MTTD · MTTR 을 낼 수 없다. F-6 은 캐시 폴백으로 서비스가 살아 있으니
+    실시간 표시보다 기록의 정확성이 중요하다 — 복구 후 완결된 사건을 적는다.
+
+    1회 실패로 사건을 만들지 않는다(순간 오류 오탐 방지). 연속 2회에서 탐지로 본다.
+    """
+
+    def __init__(self) -> None:
+        self.failures = 0
+        self.detected_at: float | None = None
+
+    def observe(self, *, ok: bool, now: float) -> dict | None:
+        """관측 한 번. **복구된 순간에만** 적을 사건을 돌려주고, 그 밖에는 None 이다."""
+        if not ok:
+            self.failures += 1
+            if self.failures == DB_FAIL_NEEDED:
+                self.detected_at = now
+            return None
+        if self.detected_at is None:
+            self.failures = 0                 # 연속 2회에 못 미친 깜빡임은 사건이 아니다
+            return None
+        record = {"detected_at": self.detected_at, "resolved_at": now, "failures": self.failures}
+        self.failures = 0
+        self.detected_at = None
+        return record
+
+
+def report_db_outage(record: dict, *, evidence: list[str]) -> str | None:
+    """보류했던 F-6 사건을 복구 후에 적는다. 탐지 · 복구 시각은 보류한 값 그대로 쓴다."""
+    if _open_incident_count("DB_UNAVAILABLE", "menu_store"):
+        return None
+    incident_id = "INC-" + secrets.token_hex(6).upper()
+    db.execute(
+        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
+        "detected_at,recovery_started_at,resolved_at,detection_metric,detection_evidence,"
+        "is_verification_run) "
+        "VALUES (%s,%s,'DB_UNAVAILABLE','recovered',%s,"
+        "        NOW() - (%s * INTERVAL '1 second'), NOW() - (%s * INTERVAL '1 second'), NOW(),"
+        "        'db_connection_error',%s,false)",
+        (incident_id, f"tr_{secrets.token_hex(6).upper()}", "메뉴 저장소 연결 끊김",
+         record["resolved_at"] - record["detected_at"],
+         record["resolved_at"] - record["detected_at"], evidence), role="healing")
+    return incident_id

@@ -115,3 +115,30 @@ def test_resilient_call_records_metrics_on_failure_and_success(monkeypatch):
 
     assert calls == ["primary", "backup"]
     assert seen == [("DEP_HTTP_5XX", "primary"), (None, "backup")]
+
+
+# --- F-6 저장소 메트릭 (필수 FT-03) ----------------------------------------------------------
+def test_slow_query_is_recorded_once_it_passes_two_seconds(monkeypatch, written):
+    """PRD 5.6.1 DB 판정 조건 "쿼리 2초 초과"."""
+    assert db.SLOW_QUERY_SEC == 2.0
+    now = [100.0]
+    monkeypatch.setattr(db.time, "monotonic", lambda: now[0])
+    now[0] = 102.5
+    db._watch_query("SELECT 1 FROM app.menu", started=100.0)
+    rows = _params(written)
+    assert [r["metric_key"] for r in rows] == ["slow_query_count"]
+    assert rows[0]["target"] == "menu_store" and rows[0]["breached"] is True
+
+
+def test_a_fast_query_is_not_recorded(monkeypatch, written):
+    monkeypatch.setattr(db.time, "monotonic", lambda: 100.3)
+    db._watch_query("SELECT 1 FROM app.menu", started=100.0)
+    assert written == []
+
+
+def test_writing_a_metric_never_measures_itself(monkeypatch, written):
+    """메트릭 기록 자체가 DB 쓰기다 — 메트릭 표를 건드리는 쿼리를 세면 무한 재귀한다."""
+    monkeypatch.setattr(db.time, "monotonic", lambda: 110.0)
+    db._watch_query("INSERT INTO healing.runtime_metric(metric_key,target) VALUES (%s,%s)",
+                    started=100.0)
+    assert written == []

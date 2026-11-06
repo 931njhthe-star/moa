@@ -207,3 +207,38 @@ def test_agent_exception_is_not_claimed_as_auto_recovered():
     """
     assert "AGENT_EXCEPTION" not in monitor.AUTO_RECOVERABLE
     assert {"DEP_HTTP_5XX", "DEP_TIMEOUT", "AGENT_OUTPUT_INVALID", "WORKER_DOWN"} <= monitor.AUTO_RECOVERABLE
+
+
+# --- F-6 저장소 장애 (필수 FT-03) — DB 가 죽은 동안은 사건을 적을 수 없다 -----------------------
+# 사건 기록이 같은 DB 에 있으므로 F-6 중에는 INSERT 자체가 불가능하다.
+# 그래서 탐지 시각을 메모리에 들고 있다가 **DB 가 돌아온 뒤에** 완결된 사건을 한 번에 적는다.
+# F-6 은 캐시 폴백으로 서비스가 살아 있으므로 실시간 표시보다 기록의 정확성이 중요하다.
+def test_db_outage_needs_two_failures_before_it_counts():
+    out = monitor.DbOutage()
+    assert out.observe(ok=False, now=100.0) is None      # 1회는 순간 오류일 수 있다
+    assert out.detected_at is None
+    assert out.observe(ok=False, now=105.0) is None      # 2회째에 탐지로 본다
+    assert out.detected_at == 105.0
+
+
+def test_db_outage_reports_the_incident_only_when_it_comes_back():
+    out = monitor.DbOutage()
+    out.observe(ok=False, now=100.0)
+    out.observe(ok=False, now=105.0)
+    assert out.observe(ok=False, now=110.0) is None      # 아직 돌아오지 않았다
+    record = out.observe(ok=True, now=118.0)
+    assert record == {"detected_at": 105.0, "resolved_at": 118.0, "failures": 3}
+    assert out.detected_at is None                       # 보고한 뒤에는 비운다
+
+
+def test_a_single_blip_leaves_nothing_to_report():
+    out = monitor.DbOutage()
+    out.observe(ok=False, now=100.0)
+    assert out.observe(ok=True, now=101.0) is None       # 연속 2회에 못 미쳤으면 사건이 아니다
+    assert out.detected_at is None
+
+
+def test_db_outage_stays_quiet_while_healthy():
+    out = monitor.DbOutage()
+    assert out.observe(ok=True, now=1.0) is None
+    assert out.observe(ok=True, now=2.0) is None

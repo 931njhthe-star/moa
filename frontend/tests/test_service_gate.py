@@ -55,3 +55,42 @@ def test_ops_asks_again_after_leaving_dashboard():
 
     [b for b in at.button if (b.key or "").startswith("ops_entry")][0].click().run()
     assert len(at.text_input) == 1   # O-0 비밀번호 칸
+
+
+# --- 운영 대시보드 전용 스택 (moa-ops · MOA_OPS_ONLY=1) --------------------------
+def test_ops_only_goes_straight_to_ops_login(monkeypatch):
+    """8502 — 진입 게이트 없이 O-0 비밀번호 칸 하나만 보인다."""
+    monkeypatch.setenv("MOA_OPS_ONLY", "1")
+    at = AppTest.from_file(APP, default_timeout=60).run()
+
+    assert not at.exception
+    texts = _texts(at)
+    assert copy.G0_PROMPT not in texts
+    assert copy.O0_PROMPT in texts
+    assert len(at.text_input) == 1
+
+
+def test_ops_only_login_shows_dashboard(monkeypatch):
+    """비밀번호 한 번이면 대시보드 — 서비스 게이트 통과 플래그 없이도 들어간다."""
+    monkeypatch.setenv("MOA_OPS_ONLY", "1")
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.text_input[0].input("anything")
+    at.button[0].click().run()
+
+    assert not at.exception
+    assert at.session_state[state.OPS_AUTHED]
+    assert not at.session_state[state.SERVICE_AUTHED]
+    assert copy.O0_PROMPT not in _texts(at)
+
+
+def test_ops_only_keeps_auth_on_rerun(monkeypatch):
+    """대시보드 안에서 다시 그려도 운영 인증을 버리지 않는다 (담당자 화면 밖으로 나간 것이 아니다)."""
+    monkeypatch.setenv("MOA_OPS_ONLY", "1")
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state[state.OPS_AUTHED] = True
+    at.session_state[state.OPS_TOKEN] = "preview-ops-token"
+    at.run()
+    at.run()
+
+    assert not at.exception
+    assert at.session_state[state.OPS_AUTHED]

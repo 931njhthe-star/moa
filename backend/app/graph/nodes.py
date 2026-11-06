@@ -687,6 +687,13 @@ def _candidates(rows: list[dict], event: dict) -> list[dict]:
     live = [r for r in rows if not r.get("_removed")]
     if event.get("target_message_id"):
         hit = [r for r in live if r["_message_id"] == event["target_message_id"]]
+        # 가리킨 메시지가 **남의 주문**이면 쓰지 않는다. 해석 서비스가 대상을 잘못 짚는 일이 있다 —
+        # 실측 2026-11-07 ORD-0034: 김민수의 "아까 샷 추가한 한 잔 취소할게요" 가 박서연의 m3 을
+        # 가리켰고(target_unclear=false), 그 바람에 취소가 반영되지 않고 질문도 뜨지 않았다.
+        # 남의 잔을 취소하는 것은 조용히 사라지는 것보다 더 나쁘다. 사람 기준으로 돌아가
+        # 문장의 단서(샷 추가 등)로 좁힌다 — _narrow_by_options 가 그 일을 한다
+        if event.get("person"):
+            hit = [r for r in hit if r["person"] == event["person"]]
         if hit:
             return _distinct(hit)
     hint = (event.get("target_hint") or "").strip()

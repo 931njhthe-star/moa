@@ -207,14 +207,21 @@ def _pick_service() -> str | None:
     states = {}
     if config.db_configured():
         try:
-            rows = db.fetch_all("SELECT dependency_key, state FROM healing.circuit_state", role="healing")
-            states = {r["dependency_key"]: r["state"] for r in rows}
+            rows = db.fetch_all("SELECT dependency_key, state, cooldown_until FROM healing.circuit_state",
+                                role="healing")
+            states = {r["dependency_key"]: r for r in rows}
         except Exception:      # noqa: BLE001 — 스위치를 못 읽으면 마지막 기본값(1차)
             states = {}
-    usable = ("up", "degraded")
-    if config.ORDER_INTERPRETER_PRIMARY_URL and states.get("order_interpreter_primary", "up") in usable:
+
+    def ok(key: str) -> bool:
+        # 회로 해석은 interpreter_client.circuit_usable 한 곳이다 — 냉각이 지난 circuit_open 은
+        # 시험 요청 1회를 받는다(PRD 5.6 F-4). 여기서 따로 판단하면 요청 경로와 규칙이 갈린다
+        row = states.get(key) or {}
+        return interpreter_client.circuit_usable(row.get("state", "up"), row.get("cooldown_until"))
+
+    if config.ORDER_INTERPRETER_PRIMARY_URL and ok("order_interpreter_primary"):
         return "primary"
-    if config.ORDER_INTERPRETER_BACKUP_URL and states.get("order_interpreter_backup", "up") in usable:
+    if config.ORDER_INTERPRETER_BACKUP_URL and ok("order_interpreter_backup"):
         return "backup"
     return None
 

@@ -370,12 +370,16 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
         # Warm this exact brand/version cache before injecting the menu read fault.
         preloaded_checksum = menu.catalog("generic", config.MENU_VERSION).get("checksum")
     attempts: list[dict] = []
+    first_fault_at: float | None = None      # 장애를 **처음 관측한** 시각 (MTTD 의 끝점)
 
     def record_attempt(item: dict) -> None:
+        nonlocal first_fault_at
         entry = dict(item)
         entry["request_attempt_no"] = entry.get("attempt_no")
         entry["attempt_no"] = len(attempts) + 1
         attempts.append(entry)
+        if first_fault_at is None and entry.get("outcome") == "실패":
+            first_fault_at = time.monotonic()
         _event(run_id, "recovery_attempt",
                f"시도 {entry.get('attempt_no')}: "
                f"{entry.get('service') or entry.get('action') or '해석 요청'} · "
@@ -420,7 +424,12 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
             samples = 3 if fault == "F-4" else 5 if fault == "F-1" else 1
             verdict, detail, request_count = _synthetic_interpreter_request(fault, target, samples, run_id, record_attempt)
             _update_run(run_id, phase="verifying", iteration=no)
-            detected_at = time.monotonic()
+            # 탐지 시각은 **첫 관측 실패**다. 복구 관측이 다 끝난 뒤에 찍으면 MTTD 가 복구 시간까지
+            # 흡수해 과대해지고 MTTR 이 0 에 가까워진다 — 실측 2026-11-06: mttd 12,611ms · mttr 13ms.
+            # SC-3(복구 60초)이 늘 통과하는 거짓 합격이 되므로 판정이 무의미해진다.
+            # 실패를 한 번도 관측하지 못했으면(대체 경로로 바로 성공) 지금을 쓴다 — 그 회차는
+            # 애초에 1차 장애를 거치지 않았다는 뜻이고, attempts 기록에 그 사실이 남는다
+            detected_at = first_fault_at or time.monotonic()
             incident_id = _create_incident(run_id, no, fault, injection_id, detail)
             if fault == "F-4":
                 _clear(run_id, injection_id)

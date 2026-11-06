@@ -6,11 +6,12 @@ event 이름을 즉흥으로 늘리면 집계가 깨진다.
 
 import json
 import logging
+import logging.handlers
 import sys
 import time
 import uuid
 
-# D-03 1.5 — **17종 고정**(v1.1 · 2026-11-03 결정 ⑥: v1.0 14종 + 코드에서 쓰던 3종 편입).
+# D-03 1.5 — 고정 목록(이벤트 이름을 임의로 만들지 않는다).
 # 목록 밖의 이름은 log() 가 거부한다 — 즉흥으로 늘리면 MTTD · MTTR 집계가 깨진다
 EVENTS = {
     "request",                  # 모든 HTTP 요청 — 미들웨어 1곳에서만
@@ -31,6 +32,7 @@ EVENTS = {
     "session_created",          # 세션 생성 — O-6 · 처리량
     "checkpoint_saved",         # 단계 진행 — F-3 재개 근거 (checkpoint_save_failed 의 짝)
     "db_unavailable",           # DB 닿지 못함 — F-6 탐지 신호
+    "circuit_update_failed",    # interpreter circuit-state 갱신 실패 — 요청 처리는 계속한다
 }
 
 _logger = logging.getLogger("moa")
@@ -55,10 +57,10 @@ def setup(name: str = "service") -> None:
         from app import config
 
         config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        everything = logging.FileHandler(config.LOG_DIR / f"{name}.log", encoding="utf-8")
+        everything = _daily_file(config.LOG_DIR / f"{name}.log")
         everything.setFormatter(formatter)
         errors_name = "errors.log" if name == "service" else f"{name}-errors.log"
-        errors = logging.FileHandler(config.LOG_DIR / errors_name, encoding="utf-8")
+        errors = _daily_file(config.LOG_DIR / errors_name)
         errors.setLevel(logging.ERROR)
         errors.setFormatter(formatter)
         _logger.addHandler(everything)
@@ -68,6 +70,19 @@ def setup(name: str = "service") -> None:
         _state["files"] = False
     _logger.setLevel(logging.INFO)
     _logger.propagate = False
+
+
+LOG_RETENTION_DAYS = 14        # PRD 9.3 추적 — 로그 14일 보관
+
+
+def _daily_file(path) -> logging.Handler:
+    """UTC 자정마다 {파일}.YYYY-MM-DD 로 넘기고 14일 치만 남긴다.
+
+    파일은 컨테이너 밖(호스트 ./logs/<컨테이너>)에 마운트된다 — 배포로 컨테이너가 다시 만들어져도
+    남아야 장애 실험의 로그 증빙이 된다. 순환이 없으면 그 파일이 끝없이 커진다.
+    """
+    return logging.handlers.TimedRotatingFileHandler(
+        path, when="midnight", backupCount=LOG_RETENTION_DAYS, encoding="utf-8", utc=True)
 
 
 def logs_writable() -> bool:
@@ -85,7 +100,7 @@ def new_trace_id() -> str:
 
 def log(event: str, *, level: str = "info", **fields) -> None:
     if event not in EVENTS:
-        raise ValueError(f"로그 event 는 D-03 1.5 의 17종에서만 쓴다: {event}")
+        raise ValueError(f"로그 event 는 D-03 1.5 의 고정 목록에서만 쓴다: {event}")
     payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event, "level": level}
     payload.update({k: v for k, v in fields.items() if v is not None})
     getattr(_logger, level)(json.dumps(payload, ensure_ascii=False))

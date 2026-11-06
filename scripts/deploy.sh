@@ -9,9 +9,10 @@
 #   1. 사전 점검(.env) · 옛 단일 스택(프로젝트 moa) 정리 · 네트워크
 #   2. 이미지 받기
 #   3. healing 멈춤 — 교체 중 컨테이너가 내려가는 것을 장애로 보고 재시작하지 않게 (끝나면 반드시 다시 켠다)
-#   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다)
+#   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다) → DB 백업 (서버만)
 #   5. 해석 서비스: backup → primary 한 개씩 (둘이 동시에 내려가지 않게)
 #   6. 앱 스택: A 교체 → 게이트웨이에서 A UP 확인 → B 교체 → B UP 확인. A 가 UP 이 안 되면 B 는 건드리지 않는다
+#   6-1. 운영 대시보드 스택(moa-ops) 교체 — 실패해도 경고만 (서비스는 A · B)
 #   7. healing 다시 켬 · 오래된 이미지 정리
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,14 +48,44 @@ wait_gateway_up() {
 }
 
 # 컨테이너 안에서 자기 /health 를 부른다 (slim 이미지에는 curl 이 없다)
+# "프로세스가 떠서 HTTP 로 답한다"만 본다 — 상태 코드는 따지지 않는다.
+#   해석 서비스는 장애 주입(F-1 error 모드)이 켜져 있으면 /health 에 503 을 답한다. 그것도 떠 있는 것이다
+#   (주입 해제 · 복구 판단은 healing 몫이고, 배포가 그 때문에 멈추면 앱 스택을 못 띄운 채 끝난다)
 wait_http() {
   local name=$1 url=$2
   for _ in $(seq 1 30); do
-    docker exec "$name" python -c "import urllib.request; urllib.request.urlopen('$url', timeout=2)" \
-      >/dev/null 2>&1 && return 0
+    docker exec "$name" python -c "
+import sys, urllib.request, urllib.error
+try:
+    urllib.request.urlopen('$url', timeout=2)
+except urllib.error.HTTPError:
+    pass                      # 4xx · 5xx 도 응답이다
+except Exception:
+    sys.exit(1)               # 연결 거부 · 시간 초과 = 아직 안 떴다
+" >/dev/null 2>&1 && return 0
     sleep 2
   done
   return 1
+}
+
+# 옛 앱 이미지 정리 — 배포마다 커밋 sha 태그 이미지(약 1.3GB)가 남아 디스크가 찬다.
+#   `docker image prune` 은 태그 없는 이미지만 지우므로 sha 태그는 여기서 지운다.
+#   컨테이너가 쓰는 이미지(지금 버전) + 쓰지 않는 것 중 최신 KEEP_PREVIOUS 벌(되돌리기용)만 남긴다
+KEEP_PREVIOUS=${KEEP_PREVIOUS:-1}
+cleanup_images() {
+  local used repo kept id ref removed=0
+  used=$(docker ps -aq | xargs -r docker inspect -f '{{.Image}}' | sed 's/^sha256://' | cut -c1-12 | sort -u)
+  for repo in moa-backend moa-frontend; do
+    kept=""
+    # docker images 는 만든 시각 최신순이다. 같은 이미지에 태그가 여럿(sha · latest)이면 한 벌로 센다
+    while read -r id ref; do
+      echo "$used" | grep -qx "$id" && continue          # 지금 쓰는 이미지
+      echo "$kept" | grep -qw "$id" && continue           # 이미 남기기로 한 이미지의 다른 태그
+      if [ "$(echo "$kept" | wc -w)" -lt "$KEEP_PREVIOUS" ]; then kept="$kept $id"; continue; fi
+      docker rmi "$ref" >/dev/null 2>&1 && removed=$((removed + 1))
+    done < <(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' | awk -v r="$repo" '$2 ~ ("(^|/)" r ":") && $2 !~ /:<none>$/')
+  done
+  log "옛 앱 이미지 ${removed}개 정리 (지금 버전 + 직전 ${KEEP_PREVIOUS}벌 보존) · 디스크 $(df -h / | awk 'NR==2 {print $4}') 남음"
 }
 
 on_exit() {
@@ -101,8 +132,17 @@ fi
 # ---------- 4. 공용 스택 기반 ----------
 log "공용 스택: db · socket-proxy · gateway"
 "${CORE[@]}" up -d --no-build --wait --wait-timeout 120 db socket-proxy gateway
-# 설정 파일(bind mount)만 바뀐 경우 컨테이너가 다시 만들어지지 않으므로 다시 읽게 한다
-docker kill -s HUP "$GATEWAY" moa-core-socket-proxy-1 >/dev/null
+# 설정 파일(bind mount)만 바뀐 경우 컨테이너가 다시 만들어지지 않으므로 다시 읽게 한다 (HAProxy 는 HUP 으로 무중단 재적재)
+#   `docker kill -s HUP` 을 쓰지 않는다 — Docker 가 "사람이 멈춤"으로 기록해, 호스트 · Docker 재시작 뒤
+#   unless-stopped 인데도 gateway · socket-proxy 가 다시 뜨지 않았다(2026-11-06 운영 중단). 컨테이너 안에서 PID 1 에 보낸다
+for c in "$GATEWAY" moa-core-socket-proxy-1; do
+  docker exec "$c" kill -HUP 1
+done
+
+# 앱을 바꾸기 전에 DB 를 백업한다 (서버만 · ~/moa/backups · 최근 14개). 실패해도 배포는 계속하되 경고를 남긴다
+if [ "$SKIP_PULL" != "1" ]; then
+  bash scripts/db-backup.sh || echo "::warning::배포 전 DB 백업 실패 — 배포는 계속한다. 디스크 · db 상태를 확인할 것" >&2
+fi
 
 # ---------- 5. 해석 서비스 — 한 개씩 ----------
 for svc in interpreter-backup:8102 interpreter-primary:8101; do
@@ -131,11 +171,20 @@ for s in a b; do
   log "앱 스택 ${s} UP"
 done
 
+# ---------- 6-1. 운영 대시보드 스택 (moa-ops) — A · B 가 모두 UP 이 된 뒤 마지막에 ----------
+# 앞 단계에서 실패하면 여기까지 오지 않는다 → 대시보드는 옛 버전 그대로 살아 있어 장애를 볼 수 있다
+log "운영 대시보드 스택 교체 (moa-ops · :8502)"
+"${APP[@]}" -f docker-compose.ops.yml -p moa-ops up -d --no-build "${RECREATE[@]}" --wait --wait-timeout 180 \
+  || echo "::warning::운영 대시보드 스택(moa-ops)이 healthy 가 되지 않았다 — 서비스(A · B)는 정상이다. docker logs moa-ops-backend-1 확인" >&2
+
 # ---------- 7. 마무리 ----------
 trap - EXIT
 log "healing 켬"
 "${CORE[@]}" up -d --no-build --no-deps healing >/dev/null
-[ "$SKIP_PULL" = "1" ] || docker image prune -f >/dev/null
+if [ "$SKIP_PULL" != "1" ]; then
+  cleanup_images
+  docker image prune -f >/dev/null      # 태그 없는(dangling) 이미지
+fi
 
 log "배포 완료 — 게이트웨이 a=$(gw_state a) b=$(gw_state b)"
 docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | grep '^moa-' | sort

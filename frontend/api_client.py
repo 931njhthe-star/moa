@@ -362,3 +362,40 @@ def ops_fault(code, action="inject", *, ops_token=None, client=None):
     """API-049 — 장애 주입 · 해제(F-1 ~ F-6 · 실습 전용)."""
     return request("POST", "/api/ops/faults", client=client, ops_token=ops_token,
                    json={"code": code, "action": action})
+
+
+def ops_workflow_preflight(*, mode="quick", fault_type="F-1", target=None, ops_token=None, client=None):
+    return request("POST", "/api/ops/workflows/preflight", client=client, ops_token=ops_token,
+                   json={"mode": mode, "fault_type": fault_type, "target": target})
+
+
+def ops_workflow_create(*, mode="quick", fault_type="F-1", target=None, repetitions=1,
+                        injection_seconds=1, idempotency_key=None, ops_token=None, client=None):
+    return request("POST", "/api/ops/workflows", client=client, ops_token=ops_token,
+                   idempotency_key=idempotency_key,
+                   json={"mode": mode, "fault_type": fault_type, "target": target,
+                         "repetitions": repetitions, "injection_seconds": injection_seconds})
+
+
+def ops_workflows(*, ops_token=None, client=None):
+    return request("GET", "/api/ops/workflows", client=client, ops_token=ops_token)
+
+
+def ops_workflow(run_id, *, ops_token=None, client=None):
+    return request("GET", f"/api/ops/workflows/{run_id}", client=client, ops_token=ops_token)
+
+
+def ops_workflow_stop(run_id, *, ops_token=None, client=None):
+    return request("POST", f"/api/ops/workflows/{run_id}/stop", client=client, ops_token=ops_token)
+
+
+def ops_workflow_export(run_id, fmt="json", *, ops_token=None, client=None):
+    headers = _headers(ops_token=ops_token)
+    try:
+        res = _send("GET", f"/api/ops/workflows/{run_id}/export", client=client,
+                    params={"format": fmt}, headers=headers)
+    except httpx.HTTPError as exc:
+        raise ApiUnreachable(detail=str(exc))
+    if res.status_code >= 400:
+        _unwrap(res)
+    return res.content

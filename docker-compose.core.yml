@@ -13,6 +13,15 @@
 #   앱 스택보다 먼저 있어야 한다 — compose 의 depends_on 은 프로젝트를 넘지 못한다
 #
 # 비밀번호는 이 폴더의 .env (POSTGRES_PASSWORD · HEALING_RW_PASSWORD), 앱 비밀값은 backend/.env 에 둔다
+# Docker 표준 출력 로그(docker logs) 크기 제한 — 컨테이너마다 10MB × 3개 = 최대 30MB (10개 합계 300MB)
+#   게이트웨이 · 앱이 요청마다 한 줄씩 남기므로 제한이 없으면 디스크를 계속 쓴다(장애 실험 25회 동안 특히).
+#   앱 로그 원본(14일 보관)은 호스트 ./logs/<컨테이너> 파일이다 (D-03 1.5) — 여기는 실시간 확인용
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # 밖으로 여는 유일한 포트 8501. 두 앱 스택 네트워크에 모두 붙어 A · B frontend 로 나눠 보낸다
   # 설정: gateway/haproxy.cfg (서버에도 이 파일을 같은 경로로 둔다)
@@ -30,6 +39,7 @@ services:
       - moa-b_default
     restart: unless-stopped
     mem_limit: 64m       # 실측 약 14MB
+    logging: *default-logging
 
   db:
     image: postgres:16
@@ -43,10 +53,11 @@ services:
     networks: [moa_core]
     restart: unless-stopped
     mem_limit: 256m       # 실측 약 32MB (유휴)
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
-      timeout: 3s
+      timeout: 10s
       retries: 10
 
   # 주문 해석 서비스 2계통 — backend 와 같은 이미지, 역할만 다르다. 두 앱 스택이 함께 쓴다
@@ -63,12 +74,15 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
     expose:
       - "8101"
+    volumes:
+      - ./logs/interpreter-primary:/app/logs   # 로그를 호스트에 — 배포에도 남는다
     networks: [moa_core]
     depends_on:
       db:
         condition: service_healthy
     restart: "no"          # F-1 · F-2 · F-5 주입 대상 — Docker 가 먼저 되살리면 복구를 잴 수 없다 (R-14)
     mem_limit: 192m       # 실측 약 45MB (유휴)
+    logging: *default-logging
 
   interpreter-backup:
     build: ./backend
@@ -83,12 +97,15 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
     expose:
       - "8102"
+    volumes:
+      - ./logs/interpreter-backup:/app/logs   # 로그를 호스트에 — 배포에도 남는다
     networks: [moa_core]
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped   # 대체가 살아 있어야 전환이 의미를 가진다 (FR-016)
     mem_limit: 192m       # 실측 약 45MB (유휴)
+    logging: *default-logging
 
   # Docker 소켓 앞의 관문 — 조회 + 허용목록 컨테이너 재시작만 통과 (socket-proxy/haproxy.cfg)
   # healing 만 붙는 내부 네트워크 ctl 에만 둔다 → backend 등 다른 컨테이너는 이 프록시에 닿지 않는다
@@ -103,21 +120,27 @@ services:
     networks: [ctl]
     restart: unless-stopped
     mem_limit: 32m       # 실측 약 12MB
+    logging: *default-logging
 
   # 장애 대응 층 (Monitor · Diagnosis · Recovery Worker · Verification) — PRD 5.2
   # healing 코드가 들어오기 전까지 빈 명령으로 자리만 잡는다 → 코드가 생기면 command 를 ["python", "-m", "healing"] 으로
   healing:
     image: ${REGISTRY:-}moa-backend:${TAG:-latest}
-    command: ["sleep", "infinity"]
+    command: ["python", "-m", "healing"]
     # backend/.env 를 통째로 넘기지 않는다 — LLM 키 등 healing 이 쓰지 않는 비밀값까지 들어가므로 필요한 값만 준다
     environment:
       # 연결 규칙 (기획서 6절 배포 구성) — healing 담당과 합의한 값
       DOCKER_HOST: tcp://socket-proxy:2375
       GATEWAY_STATS_URL: "http://gateway:8404/stats;csv"
+      ORDER_INTERPRETER_PRIMARY_URL: http://interpreter-primary:8101
+      ORDER_INTERPRETER_BACKUP_URL: http://interpreter-backup:8102
+      ENVIRONMENT: ${ENVIRONMENT:-lab}
       HEALING_ALLOWLIST: moa-a-backend-1,moa-b-backend-1,moa-a-frontend-1,moa-b-frontend-1
       # 대상 상태 확인: http://<허용목록 이름>:8000/health (backend 는 moa_core 에서 컨테이너 이름으로 보인다)
       # healing_rw = healing 스키마 R/W · app 스키마 읽기만 (sql/01_roles.sql)
       DATABASE_URL: postgresql://healing_rw:${HEALING_RW_PASSWORD:?이 폴더의 .env 에 HEALING_RW_PASSWORD 를 넣는다 (backend/.env 와 같은 값)}@db:5432/postgres
+    volumes:
+      - ./logs/healing:/app/logs   # 로그를 호스트에 — 사건 증빙 (healing 이 logging_setup 을 쓰면 여기에 쌓인다)
     networks:
       - moa_core
       - ctl
@@ -128,6 +151,7 @@ services:
         condition: service_started
     restart: unless-stopped
     mem_limit: 192m       # 코드 들어오면 다시 잰다
+    logging: *default-logging
 
 networks:
   ctl:

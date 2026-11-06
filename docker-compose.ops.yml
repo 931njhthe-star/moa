@@ -1,0 +1,25 @@
+# 운영 대시보드 전용 스택 (프로젝트 moa-ops) — 앱 스택 compose 에 덮어 쓰는 파일
+#
+# 앱 스택 A · B 와 같은 이미지 · 같은 compose 를 프로젝트 이름만 바꿔 세 번째로 띄운다. 코드 변경 없음
+#   docker compose -f docker-compose.app.yml -f docker-compose.ops.yml -p moa-ops up -d
+#   접속: http://<서버>:8502 → 진입 비밀번호 → [운영 대시보드]
+#
+# 왜 따로 두나
+#   - A · B 가 함께 죽어도(같은 이미지 · 같은 버그) 대시보드 · 복구 승인은 살아 있어야 한다
+#   - ops 토큰은 backend 프로세스 메모리에만 있다(ops_auth.py). A → B 전환 때 다시 로그인하지 않게
+#     게이트웨이를 거치지 않고 늘 같은 backend 하나에 붙는다
+#   - healing 허용목록(moa-a/b-*)에 없다 → 장애 주입 · 자동 재시작 대상이 아니다
+#
+# 공용 스택(db)이 죽으면 이 대시보드도 데이터를 못 읽는다 — 그건 서비스 전체가 멈춘 경우다
+# 서버 방화벽(보안 그룹)에서 8502 를 모두에게 연다 — 8501 의 [운영 대시보드] 버튼과 같은 비밀번호 · 같은 화면이다
+#   로그인 시도 제한이 없으므로 backend/.env 의 OPS_DASHBOARD_PASSWORD 는 12자 이상으로 둔다
+
+services:
+  backend:
+    restart: unless-stopped   # 장애 주입 대상이 아니다 — 늘 살아 있게 (앱 스택은 "no", R-14)
+
+  frontend:
+    environment:
+      MOA_OPS_ONLY: "1"       # 어느 주소로 와도 /ops · 진입 게이트 없이 운영 비밀번호 한 번 (frontend/app.py)
+    ports:
+      - "8502:8501"           # 게이트웨이(8501)를 거치지 않고 바로 연다

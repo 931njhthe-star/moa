@@ -1,6 +1,6 @@
 # MOA AI Auto Healing PRD
 
-> 문서 버전: **v1.2**
+> 문서 버전: **v1.3**
 > 작성일: 2026-11-06
 
 ## 목차
@@ -66,7 +66,7 @@
 | 주문 참여자   | 접속하지 않음                                                  | 단톡방 카드에서 자기 주문 확인, 바꿀 것이 있을 때만 답장       |
 | 서비스 운영자 | 담당자 화면(A · B · E) 상단 우측 [운영 대시보드] → 비밀번호 | 장애 · 복구 상태 확인, 복구 승인 · 거부, 주문 처리 기록 조회 |
 
-- **서비스 진입 게이트(G-0)**: 어느 주소로 들어와도 처음 한 번 비밀번호를 받는다(운영 대시보드와 같은 `OPS_DASHBOARD_PASSWORD`, 비교는 서버). 통과 여부는 브라우저 세션 동안 유지되고, 운영 대시보드는 들어간 뒤에도 따로 비밀번호를 묻는다. 진입 게이트 화면에는 [운영 대시보드] 버튼이 없다
+- **서비스 진입 게이트(G-0)**: 어느 주소로 들어와도 처음 한 번 비밀번호를 받는다(운영 대시보드와 같은 `OPS_DASHBOARD_PASSWORD`, 비교는 서버). 통과 여부는 브라우저 세션 동안 유지되고, 운영 대시보드는 들어간 뒤에도 따로 비밀번호를 묻는다. 진입 게이트 화면에는 [운영 대시보드] 버튼이 없다. 단, 운영 대시보드 전용 주소(8502, 5.4)는 진입 게이트 없이 바로 운영 대시보드 비밀번호를 받는다(같은 값)
 
 ### 3.1 화면 구성
 
@@ -268,7 +268,7 @@ flowchart LR
 
 ### 5.4 배포 구성 — 공용 스택 + 앱 스택 A/B (Docker Engine 1대)
 
-Docker Engine 한 대에 compose 파일 2개로 띄운다. 앱 파일 하나를 프로젝트 이름만 바꿔 두 번 띄워 앱 복제본 A · B를 만들고 공용 스택의 게이트웨이가 두 앱 스택에 요청을 나눈다.
+Docker Engine 한 대에 compose 파일 2개로 띄운다. 앱 파일 하나를 프로젝트 이름만 바꿔 두 번 띄워 앱 복제본 A · B를 만들고 공용 스택의 게이트웨이가 두 앱 스택에 요청을 나눈다. 같은 앱 파일을 덮어쓰기 파일(`docker-compose.ops.yml`)과 함께 한 번 더 띄워 운영 대시보드 전용 스택(`moa-ops`)을 둔다.
 
 ```mermaid
 flowchart LR
@@ -286,10 +286,15 @@ flowchart LR
     subgraph B["docker-compose.app.yml · 프로젝트 moa-b"]
         FB["frontend"] --> BB["backend"]
     end
+    subgraph OPS["app.yml + ops.yml · 프로젝트 moa-ops"]
+        FO["frontend<br/>외부 8502"] --> BO["backend"]
+    end
+    O[운영자] --> FO
     G --> FA
     G --> FB
     BA --> DB
     BB --> DB
+    BO --> DB
     BA --> IP
     BB --> IP
     H -.->|"허용목록 재시작"| BA
@@ -301,6 +306,7 @@ docker network create moa_core                               # 처음 한 번
 docker compose -f docker-compose.core.yml -p moa-core up -d   # 공용 스택을 먼저
 docker compose -f docker-compose.app.yml  -p moa-a    up -d   # 앱 복제본 A
 docker compose -f docker-compose.app.yml  -p moa-b    up -d   # 앱 복제본 B (같은 파일 · 같은 이미지)
+docker compose -f docker-compose.app.yml -f docker-compose.ops.yml -p moa-ops up -d   # 운영 대시보드 전용 (:8502)
 ```
 
 | 스택 · 서비스                              |     수량 | 네트워크 · 포트                                                                    | 역할 · 재시작 정책                                                                                                                           |
@@ -312,10 +318,12 @@ docker compose -f docker-compose.app.yml  -p moa-b    up -d   # 앱 복제본 B 
 | 공용 `socket-proxy`                       |        1 | `moa_core` 전용, 외부 포트 없음                                                   | Docker 소켓 앞에서 허용목록 컨테이너의 **상태 조회 · 재시작만** 통과시킨다. healing만 부른다 · `unless-stopped`                     |
 | 앱 `frontend`                             | 스택당 1 | 자기 스택 네트워크 전용, 포트 열지 않음                                             | Streamlit 화면. 같은 스택의 `backend`만 부른다 · `unless-stopped`                                                                        |
 | 앱 `backend`                              | 스택당 1 | 자기 스택 네트워크 + `moa_core`                                                   | FastAPI · 업무 층 에이전트 · `restart: "no"`(F-3 주입 대상, 재시작은 Recovery Worker의 허용목록 액션만)                                   |
+| 운영 `frontend` · `backend` (`moa-ops`) |     각 1 | `moa-ops_default` + backend는 `moa_core`. frontend만 외부 `8502`(모두에게 공개)       | 운영 대시보드 전용. 게이트웨이를 거치지 않고 앱 A · B와 장애를 같이 겪지 않는다. 장애 주입 · healing 허용목록 밖 · 둘 다 `unless-stopped`  |
 
 - **DB는 하나다.** `db` · 볼륨을 앱 파일에 두지 않는다. 앱 파일에 두면 프로젝트마다 DB가 따로 생겨 전환 뒤 세션 복원과 SC-5가 깨진다
 - **스택끼리 섞이지 않게 한다.** frontend는 자기 스택 네트워크에만 붙여 같은 스택의 `backend`만 보이게 한다. 게이트웨이와 healing은 서비스 이름이 아니라 컨테이너 이름(`moa-a-frontend-1` · `moa-a-backend-1` 등)으로 대상을 지정한다
 - **상태 확인과 전환.** 게이트웨이는 사용자 요청을 각 스택의 frontend로 보내고 상태 확인은 같은 스택 backend의 `/health`를 2초 간격으로 본다(frontend 연결 실패도 장애로 본다). 2회 실패하면 그 스택을 제외하고, 앱 스택 하나의 장애는 **15초 안에** 다른 스택으로 넘긴다. 복구된 스택은 2회 연속 성공한 뒤에만 재등록한다
+- **운영 대시보드는 따로 산다.** A · B는 같은 이미지라 같은 원인으로 함께 죽을 수 있는데, 그때가 복구 승인이 가장 필요한 때다. 또 ops 토큰은 backend 메모리에만 있어 A → B 전환 때 다시 로그인해야 한다. 그래서 운영자는 게이트웨이 대신 `moa-ops`(8502)로 들어가 늘 같은 backend 하나에 붙는다. 배포는 A · B가 모두 UP이 된 뒤 마지막에 교체한다
 - **시작 순서.** compose의 `depends_on`은 프로젝트를 넘지 못하므로 공용 스택을 먼저 띄운다. backend는 DB가 늦게 떠도 재연결하고, 게이트웨이는 앱 스택이 없어도 먼저 뜬다
 - 화면 상태는 Streamlit 메모리로 복구하지 않는다. 다시 접속하면 세션 토큰으로 DB에서 주문 · 진행 상태를 다시 불러온다
 - 두 앱 스택의 로컬 메뉴 캐시는 메뉴 버전으로 구분하고 캐시만으로 불확실한 메뉴를 확정하지 않는다
@@ -576,7 +584,7 @@ flowchart LR
 | 보안          | 관리 링크는 추측 불가 토큰, 공유 카드 · 로그에 토큰 원문 없음. Recovery Worker에 광범위한 Docker 제어 권한을 주지 않는다                                                                                                             |
 | 운영 대시보드 | 비밀번호 하나로 진입, 값은 `.env`의 `OPS_DASHBOARD_PASSWORD`에만. 같은 값으로 서비스 진입 게이트(G-0)도 연다(3절)                                                                                                                 |
 | 추적          | 모든 사건을 `incident_id` · `trace_id`로 추적, UTC 밀리초 로그 14일 보관. 비밀값 · 원문 대화 · 프롬프트 전문은 로그에 남기지 않는다                                                                                            |
-| 배포 구성     | Docker Engine 1대 · `docker-compose.core.yml` 1벌 + `docker-compose.app.yml` 2벌(`moa-a` · `moa-b`), 외부 포트 8501 하나(게이트웨이), 비밀값은 `.env`만, 업무 처리 컨테이너는 `restart: "no"`, 컨테이너마다 메모리 제한 |
+| 배포 구성     | Docker Engine 1대 · `docker-compose.core.yml` 1벌 + `docker-compose.app.yml` 2벌(`moa-a` · `moa-b`) + 운영 대시보드 전용 1벌(`moa-ops`), 외부 포트는 8501(게이트웨이)과 8502(운영 대시보드 · 모두에게 공개, 비밀번호로 보호), 비밀값은 `.env`만, 업무 처리 컨테이너는 `restart: "no"`, 컨테이너마다 메모리 제한 |
 | 사용성        | 모바일에서도 사용 가능, 해요체 · 쉬운 말, 내부 용어 노출 0건, 처음 쓰는 5명 중 4명 이상이 도움말 없이 첫 정리 완료                                                                                                                   |
 
 ---
@@ -634,3 +642,4 @@ flowchart LR
 | v1.0 | 2026-11-05 | 최초 승인본                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | v1.1 | 2026-11-06 | 기능 고도화기반 지표 재검토 및 수정<br />-입력: 첨부는 `.txt`만(확장자 + 텍스트 내용), 그 밖의 파일은 안내 후 거부 <br />· 답장은 분명한 변경을 바로 반영(+ 되돌리기), 불분명한 것은 확인 질문 <br />· 별칭 사전을 시드 기준으로 판별 근거 문구 표, 매장 요청 줄 정의, 일반 카페 표현도 되묻기 대상<br />· Settlement는 합계 불일치 때 공유(완료)를 막음(주문서 생성은 막지 않음)<br />-AWAITING_BRAND_ANSWER 추가, 공유 후 수정해도 COMPLETED 유지 + 다시 공유 안내 |
 | v1.2 | 2026-11-06 | 시험 · 배포 게이트에 정적 검사(lint) 실패 시 배포 차단 1줄 추가(CI 필수 검사 근거)                                                                                                                                                                                                                                                                                                                                                                                           |
+| v1.3 | 2026-11-06 | 5.4 · 9.3 배포 구성에 운영 대시보드 전용 스택(`moa-ops` · 외부 8502) 추가 — A · B가 함께 죽어도 장애 확인 · 복구 승인 유지(#111)                                                                                                                                                                                                                                                                                                                                        |

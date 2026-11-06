@@ -1,4 +1,4 @@
-"""PRD v1.9 반영 (2026-11-05) — 처리 계획(5.9.3) · FT-04 대체 모델 재요청 · 운영 비밀번호 기본값 · 스키마 문자열.
+"""PRD v1.9 반영 (2026-11-05) — 처리 계획(5.9.3) · F-5 재생성 한도 · 운영 비밀번호 · 스키마 문자열.
 
 장애 대응 층(6역할)은 대상이 아니다. 업무 층 · 스키마 · 설정에서 바뀐 것만 본다.
 """
@@ -10,7 +10,7 @@ import pytest
 
 from app import config, interpreter_client, logging_setup
 from app.graph import nodes
-from tests.test_graph import _batch, _contract, interpreter, msgs  # noqa: F401 — fixture 재사용
+from tests.test_graph import _batch, interpreter, msgs  # noqa: F401 — fixture 재사용
 
 SQL = pathlib.Path(__file__).resolve().parent.parent / "sql"
 
@@ -50,32 +50,45 @@ def test_plan_key_is_in_run_state():
     assert "plan" in RunState.__annotations__
 
 
-# --- FT-04 대체 모델 재요청 1회 ---------------------------------------------------------------
-def test_backup_model_gets_one_try_after_regenerate_exhausted(interpreter, monkeypatch):
+# --- F-5 형식 오류는 재생성 후 NEEDS_REVIEW (PRD 8.1) -----------------------------------------
+def test_invalid_output_does_not_switch_to_backup_after_regenerate_exhausted(interpreter, monkeypatch):
     monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
+    attempted_services = []
+    original = interpreter_client.interpret_resilient
+
+    def record_service(*args, **kwargs):
+        attempted_services.append(kwargs.get("service", "primary"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(interpreter_client, "interpret_resilient", record_service)
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
-    interpreter.extend([bad, bad, bad, _contract("m1", event_type="ignore")])
+    interpreter.extend([bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
-    assert out["llm_calls"] == 4                                           # 1 + 재생성 2 + 대체 1
-    assert out["events"][0]["event_type"] == "ignore" and not out.get("degraded")
+    assert out["llm_calls"] == 3                                           # 최초 1 + 재생성 2
+    assert attempted_services == ["primary"] * 3
+    assert out["events"][0]["event_type"] == "ignore"
+    assert out["degraded"][0]["needs_review"] is True
 
 
-def test_backup_model_failure_still_falls_back_to_rules(interpreter, monkeypatch):
+def test_invalid_output_after_regeneration_is_not_replaced_by_rules(interpreter, monkeypatch):
     monkeypatch.setattr(nodes, "_backup_ready", lambda: True)
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
-    interpreter.extend([bad, bad, bad, bad])
+    interpreter.extend([bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
-    assert out["llm_calls"] == 4
+    assert out["llm_calls"] == 3
     assert out["degraded"][0]["reason"] == "regenerate_exhausted"
-    assert out["events"][0]["event_type"] == "add"                         # 지금처럼 규칙 해석
+    assert out["events"][0]["event_type"] == "ignore"
+    assert out["degraded"][0]["needs_review"] is True
 
 
-def test_no_backup_keeps_previous_behaviour(interpreter, monkeypatch):
+def test_invalid_output_without_backup_still_marks_review(interpreter, monkeypatch):
     monkeypatch.setattr(nodes, "_backup_ready", lambda: False)
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
     interpreter.extend([bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
     assert out["llm_calls"] == 3
+    assert out["events"][0]["event_type"] == "ignore"
+    assert out["degraded"][0]["needs_review"] is True
 
 
 def test_backup_ready_needs_address(monkeypatch):

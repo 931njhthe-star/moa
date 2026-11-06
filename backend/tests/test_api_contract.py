@@ -472,7 +472,7 @@ def test_background_failure_does_not_write_request_line(request_lines, monkeypat
     assert request_lines == []                               # 분석 실패는 checkpoint_save_failed 다
 
 
-# --- 로그 event 목록 — 코드 전체가 D-03 1.5 의 17종만 쓴다 (D-16 대조 항목) ---------------------------
+# --- 로그 event 목록 — 코드 전체가 D-03 1.5 의 고정 목록만 쓴다 (D-16 대조 항목) ---------------------
 def test_every_log_call_uses_fixed_event_names():
     import pathlib
     import re
@@ -485,7 +485,7 @@ def test_every_log_call_uses_fixed_event_names():
         used |= set(re.findall(r'logging_setup\.log\(\s*"([a-z_]+)"', path.read_text(encoding="utf-8")))
     assert used, "스캔이 아무것도 못 찾으면 검사가 아니다"                  # G-A0 — 빈 결과는 실패
     assert used <= logging_setup.EVENTS, used - logging_setup.EVENTS
-    assert len(logging_setup.EVENTS) == 17
+    assert len(logging_setup.EVENTS) == 18
 
 
 def test_unknown_event_is_rejected():

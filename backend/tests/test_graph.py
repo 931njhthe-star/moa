@@ -131,13 +131,14 @@ def test_intake_uses_llm_route(interpreter):
     assert out["llm_calls"] == 1 and not out.get("degraded")
 
 
-def test_intake_regenerates_twice_then_falls_back_to_rules(interpreter):
+def test_intake_regenerates_twice_then_marks_invalid_output_for_review(interpreter):
     bad = interpreter_client.InterpreterError("AGENT_OUTPUT_INVALID", "x", service="primary")
     interpreter.extend([bad, bad, bad])
     out = nodes.intake_node(_batch(msgs(1)))
     assert out["llm_calls"] == 3                                           # 1 + 재생성 2
     assert out["degraded"][0]["reason"] == "regenerate_exhausted"
-    assert out["events"][0]["event_type"] == "add"                         # 규칙 해석으로 대체
+    assert out["events"][0]["event_type"] == "ignore"                      # 미검증 출력은 주문으로 확정하지 않는다
+    assert out["degraded"][0]["needs_review"] is True
 
 
 def test_missing_event_is_filled_by_rules_without_regenerating(interpreter):

@@ -12,6 +12,7 @@
 #   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다) → DB 백업 (서버만)
 #   5. 해석 서비스: backup → primary 한 개씩 (둘이 동시에 내려가지 않게)
 #   6. 앱 스택: A 교체 → 게이트웨이에서 A UP 확인 → B 교체 → B UP 확인. A 가 UP 이 안 되면 B 는 건드리지 않는다
+#   6-1. 운영 대시보드 스택(moa-ops) 교체 — 실패해도 경고만 (서비스는 A · B)
 #   7. healing 다시 켬 · 오래된 이미지 정리
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -169,6 +170,12 @@ for s in a b; do
   wait_gateway_up "$s" || fail "게이트웨이에서 ${s} 가 60초 안에 UP 이 되지 않았다 — 나머지 스택은 교체하지 않는다"
   log "앱 스택 ${s} UP"
 done
+
+# ---------- 6-1. 운영 대시보드 스택 (moa-ops) — A · B 가 모두 UP 이 된 뒤 마지막에 ----------
+# 앞 단계에서 실패하면 여기까지 오지 않는다 → 대시보드는 옛 버전 그대로 살아 있어 장애를 볼 수 있다
+log "운영 대시보드 스택 교체 (moa-ops · :8502)"
+"${APP[@]}" -f docker-compose.ops.yml -p moa-ops up -d --no-build "${RECREATE[@]}" --wait --wait-timeout 180 \
+  || echo "::warning::운영 대시보드 스택(moa-ops)이 healthy 가 되지 않았다 — 서비스(A · B)는 정상이다. docker logs moa-ops-backend-1 확인" >&2
 
 # ---------- 7. 마무리 ----------
 trap - EXIT

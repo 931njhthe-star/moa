@@ -350,6 +350,15 @@ def test_every_container_has_a_memory_limit():
     assert {name for name, svc in services.items() if not svc.get("mem_limit")} == set()
 
 
+def test_every_container_caps_its_docker_log():
+    """docker logs(json-file)에 크기 제한이 없으면 요청마다 쌓여 서버 디스크를 계속 쓴다."""
+    services = {**compose(CORE)["services"], **compose(APP)["services"]}
+
+    for name, svc in services.items():
+        opts = (svc.get("logging") or {}).get("options") or {}
+        assert opts.get("max-size") and opts.get("max-file"), name
+
+
 def test_logs_survive_container_recreation():
     """PRD 9.3 로그 14일 — 배포가 컨테이너를 다시 만들어도 로그가 남게 호스트 폴더에 마운트한다."""
     core, app = compose(CORE)["services"], compose(APP)["services"]

@@ -33,7 +33,8 @@ FastAPI 에이전트 서버가 분석을 하고, Streamlit 화면이 입력 · �
 ├── docker-compose.*.dev.yml # 로컬 개발용 덧씌우기 — 127.0.0.1 에만 포트를 연다
 ├── gateway/haproxy.cfg      # 게이트웨이 — A/B 분산 · 쿠키 고정 · backend /health 로 제외 · 재등록
 ├── socket-proxy/haproxy.cfg # Docker API 관문 — 조회 + 허용목록 컨테이너 재시작만
-├── scripts/                 # init-networks.sh(네트워크 3개) · deploy.sh(순차 배포)
+├── scripts/                 # init-networks.sh(네트워크) · deploy.sh(순차 배포) · db-backup.sh(DB 백업 · 복원)
+│                            #   dep-test.sh(이중화 시험) · fault.sh(F-3 주입) · server-check.sh(서버 점검)
 └── .github/workflows/ci.yml # CI: 테스트 + 이미지 빌드
 ```
 
@@ -164,7 +165,9 @@ foreach ($REPO in "moa-backend", "moa-frontend") {
 ~/moa/
 ├── docker-compose.core.yml · docker-compose.app.yml
 ├── gateway/haproxy.cfg · socket-proxy/haproxy.cfg
-├── scripts/init-networks.sh · scripts/deploy.sh
+├── scripts/                 # CI 가 배포마다 복사한다
+├── logs/<컨테이너>/        # 앱 · 해석 서비스 · healing 로그 (14일 보관)
+├── backups/                # DB 백업 (배포마다 자동 · 최근 14개)
 ├── .env            # POSTGRES_PASSWORD · HEALING_RW_PASSWORD · REGISTRY=<계정 ID>.dkr.ecr.ap-northeast-2.amazonaws.com/ (끝의 / 포함)
 └── backend/.env    # backend/.env.example 을 채운 것
 ```
@@ -177,8 +180,21 @@ aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS
 bash scripts/deploy.sh                                                        # 공용 → 해석 서비스 → 앱 A → (A UP 확인) → 앱 B
 ```
 
-- 새 서버(빈 DB)라면 먼저 DB 만 띄우고 초기화한 뒤 `deploy.sh` 를 돌린다 — 초기화 전에는 backend 가 `unhealthy` 라 A 교체에서 멈춘다
-  `sh scripts/init-networks.sh && docker compose -f docker-compose.core.yml -p moa-core up -d db && docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py`
+- 새 서버(빈 DB)라면 먼저 DB 를 초기화한 뒤 `deploy.sh` 를 돌린다 — 초기화 전에는 backend 가 `unhealthy` 라 A 교체에서 멈춘다.
+  **이미지를 먼저 받는다** — 이미지가 없을 때 `run` 은 빌드를 시도하는데 서버에는 소스(`./backend`)가 없어 실패한다 (D-03 7.4)
+
+```bash
+sh scripts/init-networks.sh
+docker compose -f docker-compose.core.yml -p moa-core pull
+docker compose -f docker-compose.core.yml -p moa-core up -d db
+docker compose -f docker-compose.app.yml -p moa-a pull
+docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py
+bash scripts/deploy.sh
+```
+
+- 처음 배포 전 점검: `bash scripts/server-check.sh` (읽기만 한다 — 메모리 · compose 기능 · `.env` 키)
+- **호스트를 재부팅했으면 `bash scripts/deploy.sh` 를 한 번** 돌린다 — `restart: "no"` 인 backend · interpreter-primary 는 자동으로 뜨지 않는다
+- DB 백업: `deploy.sh` 가 배포마다 먼저 `~/moa/backups/` 에 남긴다(최근 14개). 직접: `bash scripts/db-backup.sh` · 목록 `list` · 복원 `restore <파일>`
 
 - `deploy.sh` 는 두 앱 스택을 동시에 내리지 않는다. 교체할 스택을 게이트웨이에서 먼저 빼고, 교체 뒤 UP 이 확인돼야 다음 스택으로 간다. 배포 동안 healing 은 멈춘다
 - 옛 단일 스택(프로젝트 `moa`)이 떠 있으면 `deploy.sh` 가 처음 한 번 컨테이너만 지운다 — DB 볼륨 `moa_pgdata` 는 그대로 이어 쓴다

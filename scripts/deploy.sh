@@ -9,7 +9,7 @@
 #   1. 사전 점검(.env) · 옛 단일 스택(프로젝트 moa) 정리 · 네트워크
 #   2. 이미지 받기
 #   3. healing 멈춤 — 교체 중 컨테이너가 내려가는 것을 장애로 보고 재시작하지 않게 (끝나면 반드시 다시 켠다)
-#   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다)
+#   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다) → DB 백업 (서버만)
 #   5. 해석 서비스: backup → primary 한 개씩 (둘이 동시에 내려가지 않게)
 #   6. 앱 스택: A 교체 → 게이트웨이에서 A UP 확인 → B 교체 → B UP 확인. A 가 UP 이 안 되면 B 는 건드리지 않는다
 #   7. healing 다시 켬 · 오래된 이미지 정리
@@ -133,6 +133,11 @@ log "공용 스택: db · socket-proxy · gateway"
 "${CORE[@]}" up -d --no-build --wait --wait-timeout 120 db socket-proxy gateway
 # 설정 파일(bind mount)만 바뀐 경우 컨테이너가 다시 만들어지지 않으므로 다시 읽게 한다
 docker kill -s HUP "$GATEWAY" moa-core-socket-proxy-1 >/dev/null
+
+# 앱을 바꾸기 전에 DB 를 백업한다 (서버만 · ~/moa/backups · 최근 14개). 실패해도 배포는 계속하되 경고를 남긴다
+if [ "$SKIP_PULL" != "1" ]; then
+  bash scripts/db-backup.sh || echo "::warning::배포 전 DB 백업 실패 — 배포는 계속한다. 디스크 · db 상태를 확인할 것" >&2
+fi
 
 # ---------- 5. 해석 서비스 — 한 개씩 ----------
 for svc in interpreter-backup:8102 interpreter-primary:8101; do

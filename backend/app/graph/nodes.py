@@ -600,7 +600,9 @@ def target_node(state: dict) -> dict:
     if source == "chat":
         actionable = next((e for e in events if e["route"] != "ignore"), None)
         route = actionable["route"] if actionable else _chat_route(state["text"], events)
-        target = edits._find_target(session["session_id"], state["text"]) if route != "ignore" else None
+        # 새 주문(add)은 가리킬 앞 주문이 없다 — 대상을 찾으면 **남의 행을 고르게 된다**(4차 보고 1번)
+        target = (edits._find_target(session["session_id"], state["text"])
+                  if route not in ("ignore", "add") else None)
         return {"targets": {"ordered": events, "event_type": route, "target": target}}
     if source == "reply":
         by_seq = {}
@@ -640,11 +642,21 @@ def _chat_route(text: str, events: list[dict]) -> str:
 
     system.md 규칙 4 는 **대화 속 지시**를 주문이 아닌 말로 다루라고 한다. 그런데 채팅 입력은
     담당자 본인이 이 시스템에 하는 지시다 — "박서연 과장님은 제외"가 ignore 로 분류되어
-    "주문에서 바꿀 것을 찾지 못했어요"만 돌아왔다. 규칙이 변경 · 취소로 읽으면 그것을 따른다.
-    새 주문(add)으로는 올리지 않는다 — 채팅으로 주문을 새로 만드는 경로는 없다.
+    "주문에서 바꿀 것을 찾지 못했어요"만 돌아왔다. 규칙이 변경 · 취소 · 추가로 읽으면 그것을 따른다.
+
+    **add 는 "추가"라고 적은 문장에만 따른다**(4차 보고 1번). 예전에는 "채팅으로 주문을 새로
+    만드는 경로는 없다"며 전부 버렸고, 단톡방에 늦게 온 주문을 넣을 길이 없었다. 지금은 N-09 가
+    `edits.add_from_chat` 으로 받는다.
+
+    그런데 `intake.classify` 는 **분류되지 않는 말을 add 로 돌려준다** — "오늘 날씨 좋네요"도
+    add 다. 규칙만 믿고 열면 잡담이 주문이 된다. 그래서 여기서는 넣으라고 적은 문장만 add 로
+    본다. LLM 이 add 로 읽은 경우는 이 함수를 지나지 않는다(그때는 그 판정을 따른다).
     """
     ruled = intake.classify(text)
-    if ruled in ("update", "cancel"):
+    # 울타리의 정본은 `edits.ADD_INSTRUCTION` 하나다 — 같은 규칙을 두 곳에 두지 않는다
+    if ruled == "add" and not edits.ADD_INSTRUCTION.search(text or ""):
+        return "ignore"
+    if ruled in ("update", "cancel", "add"):
         for event in events:
             event["route"] = event["event_type"] = ruled      # 출력 가드의 ignore 검사와 어긋나지 않게
         return ruled
@@ -814,6 +826,17 @@ def validation_node(state: dict) -> dict:
     return {"rows": rows}
 
 
+def _settlement_for_log(session_id: str) -> dict | None:
+    """route_decision 에 붙일 정산 대조 (SC-5). 로그 재료일 뿐이므로 DB 를 못 읽으면 칸을 비우고 넘어간다.
+
+    분석 실패로 번지지 않게 한다 — DB 장애 자체는 db_unavailable 이 따로 남긴다.
+    """
+    try:
+        return settlement.check(sessions.items(session_id))
+    except db.DbUnavailable:
+        return None
+
+
 # --- N-09 ------------------------------------------------------------------------------
 def apply_node(state: dict) -> dict:
     """N-09 결과 반영 (Settlement 포함) — source 별로 남긴다. 단계마다 체크포인트.
@@ -953,7 +976,9 @@ def output_guard_node(state: dict) -> dict:
                       plan_id=(state.get("plan") or {}).get("plan_id"),
                       planned_llm_batches=len((state.get("plan") or {}).get("llm_batches") or []),
                       degraded_batches=len({d.get("batch_no") for d in state.get("degraded") or []
-                                            if d.get("batch_no") is not None}))
+                                            if d.get("batch_no") is not None}),
+                      # 정산 대조 (SC-5) — 사람별 금액 합 = 전체 금액. 새 event 를 만들지 않는다(17종 고정)
+                      settlement=_settlement_for_log(session["session_id"]))
     if source == "snapshot":
         with db.transaction() as cur:
             pending = sessions.review_count(session["session_id"])

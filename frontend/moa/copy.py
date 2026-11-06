@@ -151,6 +151,8 @@ S5_SHARE_CAPTION = "복사하거나 저장하면 주문이 완료돼요"
 S5_SHARE_NAMES = "이름 같이 보내기"
 S5_SHARE_NAMES_OFF = "이름 없이 메뉴와 수량만 보내요"
 S5_SHARE_COPY = "텍스트 복사"
+# 브라우저가 클립보드를 막았을 때만 보인다 (평문 http · 사파리 구버전 — 4차 보고 2번)
+S5_COPY_FAILED = "브라우저가 복사를 막았어요. 아래 내용을 끌어서 복사해 주세요"
 S5_SHARE_IMAGE = "이미지 저장"
 S5_SHARE_IMAGE_LOADING = "이미지를 만들고 있어요"
 S5_BACK = "주문 정리로"
@@ -170,7 +172,7 @@ G0_TITLE = "Moa"
 G0_PROMPT = "서비스 비밀번호를 입력해 주세요"
 O6_LOGOUT = "나가기"
 O_ENV_BADGE = "실습 환경"
-O_REFRESH_NOTE = "{at} 갱신 · 5초마다"
+O_REFRESH_NOTE = "5초마다 갱신 · 시험 결과 30초"
 O4_TITLE = "승인 필요 ({n})"
 O4_EMPTY = "승인 필요 없음"
 O4_APPROVE = "승인"
@@ -190,6 +192,123 @@ O6_SEARCH_HINT = "주문 찾기: 확정 시각 · 매장"
 O6_COLUMNS = ["주문", "매장", "상태", "확정 시각", "변경", "복구"]
 O6_DETAIL_COLUMNS = ["시각", "누구", "전 → 후", "방법"]
 O6_SHARE_LABEL = "공유 기록"
+
+# --- SCR-006 고도화 (정본 시안 `Moa_운영대시보드.svg` 24 · 25-1 ~ 25-3 · 26) --------
+# 블록 A ~ F 는 05.리포트/운영대시보드_고도화안.md v0.2 의 구성이다.
+# 장애 이름은 쉬운 말을 먼저, 코드는 뒤에 작게 쓴다(고도화안 6절 원칙 2).
+FAULT_NAMES = {
+    "F-1": "주문 해석 오류 응답",
+    "F-2": "처리 프로세스 중단",
+    "F-3": "원인 미확인 장애",
+    "F-4": "앱 복제본 중단",
+    "F-5": "해석 응답 지연",
+    "F-6": "DB 연결 끊김",
+}
+# 서버 사건의 장애 코드 → 시험 유형(F-n). 서버가 `fault` 를 주면 그것을 먼저 쓴다
+FAULT_CODE_TO_F = {
+    "DEP_HTTP_5XX": "F-1",
+    "WORKER_DOWN": "F-2",
+    "AGENT_EXCEPTION": "F-2",
+    "UNKNOWN": "F-3",
+    "REPEATED_FAILURE": "F-3",
+    "REPLICA_DOWN": "F-4",
+    "DEP_TIMEOUT": "F-5",
+    "AGENT_OUTPUT_INVALID": "F-5",
+    "DB_UNAVAILABLE": "F-6",
+    "DB_CONN_LOST": "F-6",
+}
+
+# A 상태 배너 — 우선순위 표의 위에서부터 하나만 쓴다
+OA_APPROVAL = "승인이 필요해요"
+OA_APPROVAL_SUB = "{name}({code}) · {waited} 대기"
+OA_APPROVAL_TOGGLE = "승인 필요 {n}건"
+OA_FAILED = "자동 복구에 실패했어요"
+OA_INJECTED = "주입 후 {sec}초"
+OA_INJECTED_SUB = "탐지 대기 중 · {name}({code})"
+OA_RECOVERING = "복구 중"
+OA_RECOVERING_SUB = "{name}({code}) · {sec}초 경과"
+OA_DEGRADED = "정상 처리 중"
+OA_DEGRADED_BACKUP = "대체 해석기를 쓰고 있어요"
+OA_DEGRADED_RULE = "규칙 해석으로 처리하고 있어요"
+OA_DEGRADED_CACHE = "메뉴를 캐시로 조회하고 있어요"
+OA_NORMAL = "정상 운영 중"
+OA_NO_APPROVAL = "지금 승인할 일이 없어요"
+OA_RUN_SUFFIX = "{n}회차"
+
+# B 핵심 수치 4칸
+OB_CARDS = {
+    "mttd": ("탐지까지", "MTTD"),
+    "mttr": ("복구까지", "MTTR"),
+    "auto": ("사람 없이 복구", "무인 복구율"),
+    "integrity": ("주문 중복 · 유실", "데이터 무결성"),
+}
+OB_TARGET = {
+    "mttd": "목표 15초 이하",
+    "mttr": "목표 60초 · F-3 90초",
+    "auto": "목표 80% 이상",
+    "integrity": "목표 0건",
+}
+OB_PASS = "통과"
+OB_FAIL = "미달"
+OB_UNMEASURED = "미측정"
+
+# C 지금 요청 경로
+OC_TITLE = "지금 요청 경로"
+OC_GROUPS = {"gateway": "게이트웨이", "interpreter": "해석기", "store": "메뉴 저장소"}
+OC_ACTIVE = "사용 중"
+OC_STANDBY = "대기"
+OC_UNKNOWN = "상태 미수집"
+OC_BLOCKED = "차단 · {sec}초 후 시험"
+OC_BLOCKED_DEAD = "차단 · 응답 없음"
+OC_PROBING = "복귀 확인 {n}/{need}"
+OC_CACHE = "캐시로 조회 중"
+OC_NOTE_RULE = "규칙 해석으로 처리 중이에요 · 정확도가 낮을 수 있어요"
+OC_NOTE_PROBING = "복귀하려면 1차 해석기가 {need}회 연속 정상이어야 해요"
+OC_NOTE_CACHE = "메뉴 저장소가 끊겨 캐시로 조회하고 있어요 · 가격이 최신이 아닐 수 있어요"
+
+# D 장애 시험 결과
+OD_TITLE = "장애 시험 결과"
+OD_HINT = "칸 숫자 = 복구 초 · 굵은 숫자 = 목표 초과"
+OD_RUNS = "{done}/{total}회 실시"
+OD_SUCCESS = "성공"
+OD_F4_NOTE = "별도 · 안전 전환 여부만"
+OD_CELL_APPROVED = "승인"
+OD_CELL_FAILED = "실패"
+OD_CELL_INVALID = "무효"
+OD_CELL_RUNNING = "진행 중"
+OD_CELL_SWITCHED = "전환됨"
+OD_CELL_NOT_SWITCHED = "안 됨"
+OD_CELL_PENDING = "--"
+OD_LEGEND = [("auto", "사람 없이 복구"), ("approved", "승인 · 수동"), ("failed", "실패"),
+             ("invalid", "무효 · 분모 제외"), ("pending", "아직 안 함")]
+OD_TOTAL = "합계 {ok}/{valid} · {pct}%"
+OD_EMPTY = "아직 시험 결과를 받지 못했어요"
+
+# E 최근 사건
+OE_TITLE = "최근 사건"
+OE_HINT = "행을 누르면 타임라인이 펼쳐져요"
+OE_EMPTY = "기록된 장애가 없어요"
+OE_WAITING = "대기 중"
+OE_RUNNING = "{sec}초째"
+OE_JUST_NOW = "방금"
+OE_TL_LEGEND = [("pre", "탐지 전"), ("rec", "복구 중"), ("human", "사람 확인"), ("mark", "탐지 · 복구 시작 · 정상화")]
+OE_TL_START = "주입 0초"
+OE_CARDS = ["진단", "전략", "시도", "검증"]
+OE_DETAIL_PENDING = "사건 상세는 서버가 응답한 뒤에 보여 드려요"
+# 서버 전략 코드 → 쉬운 말
+OE_STRATEGY = {
+    "restart_resume": "워커 재시작",
+    "retry_fallback": "재시도 후 대체 해석기",
+    "switch_backup": "대체 해석기로 전환",
+    "cache_fallback": "캐시로 조회",
+    "reconnect_cache": "재연결 후 캐시 조회",
+    "rule_fallback": "규칙 해석으로 전환",
+    "replica_failover": "다른 복제본으로 전환",
+}
+
+# F 접힌 기록 · 장애 주입 도구줄
+OF_ORDERS_COUNT = "오늘 {n}건"
+OF_FAULT_TITLE = "장애 주입 (실습)"
 
 # --- 통신 실패 안내 ------------------------------------------------------------
 # 서버가 `user_message`를 주면 그것을 그대로 보여주고(D-02 2.2),

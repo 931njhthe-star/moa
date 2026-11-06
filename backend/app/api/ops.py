@@ -106,6 +106,12 @@ async def fault(request: Request, _: str = Depends(deps.ops_token)):
     return envelope.ok(result)
 
 
+@router.get("/trials")
+def trials(_: str = Depends(deps.ops_token)):
+    """D 장애 시험 결과 격자 — 유형별 최신 5회차(운영 대시보드 블록 D)."""
+    return envelope.ok(workflows.trials_grid())
+
+
 @router.get("/workflows/templates")
 def workflow_templates(_: str = Depends(deps.ops_token)):
     return envelope.ok({"templates": workflows.templates()})

@@ -7,6 +7,9 @@ F-6 폴백: 메뉴 캐시는 **프로세스 메모리**다 (D-07 D-8). DB 가 �
 DB 에 두면 폴백이 성립하지 않는다. 캐시는 조회 전용이고 DB 에 다시 쓰지 않는다.
 """
 
+import hashlib
+import json
+import re
 import time
 
 from app import config, db
@@ -60,6 +63,9 @@ def _load(brand_id: str, menu_version: str) -> dict:
     return {
         "menus": menus, "by_id": by_id, "alias_index": alias_index,
         "options": options, "store_words": store_words, "loaded_at": time.monotonic(),
+        "checksum": hashlib.sha256(json.dumps(
+            {"menus": menus, "aliases": aliases, "options": options},
+            ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
     }
 
 
@@ -68,16 +74,54 @@ def catalog(brand_id: str, menu_version: str | None = None, *, allow_stale: bool
     menu_version = menu_version or config.MENU_VERSION
     key = (brand_id, menu_version)
     cached = _CACHE.get(key)
+    try:
+        from app.services import incidents
+        injected = any(row.get("target") == "menu_store" and row.get("mode") == "block"
+                       for row in incidents.active_injections())
+    except db.DbUnavailable:
+        injected = False
+    if injected:
+        if cached and allow_stale:
+            return {**cached, "stale": True}
+        raise db.DbUnavailable("F-6 주입: 메뉴 카탈로그 읽기 불가, 일치 캐시 없음")
     if cached and time.monotonic() - cached["loaded_at"] < _CACHE_TTL_SEC:
         return cached
     try:
         loaded = _load(brand_id, menu_version)
     except db.DbUnavailable:
-        if cached and allow_stale:
+        # 메뉴 조회 한정 장애와 전체 DB 단절을 구분한다.
+        try:
+            db.fetch_one("SELECT 1")
+            database_reachable = True
+        except db.DbUnavailable:
+            database_reachable = False
+        if cached and allow_stale and database_reachable:
             return {**cached, "stale": True}
         raise
     _CACHE[key] = loaded
     return loaded
+
+
+def preload_active() -> dict:
+    """Warm every active brand/version before an instance is marked ready."""
+    rows = db.fetch_all("SELECT DISTINCT brand_id,menu_version FROM app.menu "
+                        "WHERE is_active=true ORDER BY brand_id,menu_version")
+    if not rows:
+        raise db.DbUnavailable("active menu catalog is empty")
+    checksums = {}
+    for row in rows:
+        key = (row["brand_id"], row["menu_version"])
+        cached = _CACHE.get(key)
+        if cached and time.monotonic() - cached["loaded_at"] < _CACHE_TTL_SEC:
+            loaded = cached
+        else:
+            loaded = _load(*key)
+            _CACHE[key] = loaded
+        checksum = loaded.get("checksum") or ""
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise db.DbUnavailable("menu cache checksum validation failed")
+        checksums[f"{key[0]}:{key[1]}"] = checksum
+    return {"catalogs": len(checksums), "checksums": checksums}
 
 
 def cache_state() -> dict:

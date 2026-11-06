@@ -64,7 +64,7 @@ def incident_list(limit: int = 50) -> dict:
         "SELECT incident_id, fault_code, status, status_label, detected_at, resolved_at, "
         "       strategy, detection_evidence "
         "  FROM healing.incident "
-        " WHERE is_verification_run = false "
+        " WHERE is_verification_run = false OR run_id IS NOT NULL "
         " ORDER BY detected_at DESC LIMIT %s",
         (limit,), role="healing")
 

@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-# D-03 1.5 — **17종 고정**(v1.1 · 2026-11-03 결정 ⑥: v1.0 14종 + 코드에서 쓰던 3종 편입).
+# D-03 1.5 — 고정 목록(이벤트 이름을 임의로 만들지 않는다).
 # 목록 밖의 이름은 log() 가 거부한다 — 즉흥으로 늘리면 MTTD · MTTR 집계가 깨진다
 EVENTS = {
     "request",                  # 모든 HTTP 요청 — 미들웨어 1곳에서만
@@ -32,6 +32,7 @@ EVENTS = {
     "session_created",          # 세션 생성 — O-6 · 처리량
     "checkpoint_saved",         # 단계 진행 — F-3 재개 근거 (checkpoint_save_failed 의 짝)
     "db_unavailable",           # DB 닿지 못함 — F-6 탐지 신호
+    "circuit_update_failed",    # interpreter circuit-state 갱신 실패 — 요청 처리는 계속한다
 }
 
 _logger = logging.getLogger("moa")
@@ -99,7 +100,7 @@ def new_trace_id() -> str:
 
 def log(event: str, *, level: str = "info", **fields) -> None:
     if event not in EVENTS:
-        raise ValueError(f"로그 event 는 D-03 1.5 의 17종에서만 쓴다: {event}")
+        raise ValueError(f"로그 event 는 D-03 1.5 의 고정 목록에서만 쓴다: {event}")
     payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event, "level": level}
     payload.update({k: v for k, v in fields.items() if v is not None})
     getattr(_logger, level)(json.dumps(payload, ensure_ascii=False))

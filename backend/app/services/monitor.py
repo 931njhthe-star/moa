@@ -39,9 +39,16 @@ def pending_signals(window_sec: int = WINDOW_SEC) -> list[dict]:
     """사건이 될 만한 관측 묶음. 이미 사건에 묶인 행과 열린 사건은 제외한다."""
     rows = db.fetch_all(
         "SELECT id,metric_key,target,value,breached,measured_at,trace_id "
-        "  FROM healing.runtime_metric "
+        "  FROM healing.runtime_metric m "
         " WHERE breached = true AND incident_id IS NULL "
         "   AND measured_at > NOW() - (%s * INTERVAL '1 second') "
+        # 장애 시험 구간의 관측은 실제 사건이 아니다. 시험 주입에만 run_id 가 있다 —
+        # 섞으면 SC-4 무인 복구율과 사건 수가 오염된다(R-14 측정 오염과 같은 종류).
+        # 주입 구간과 **겹치는 동안의** 관측만 뺀다 — 주입 전후의 실제 장애는 그대로 사건이 된다
+        "   AND NOT EXISTS (SELECT 1 FROM healing.fault_injection fi "
+        "                    WHERE fi.run_id IS NOT NULL AND fi.target = m.target "
+        "                      AND m.measured_at >= fi.injected_at "
+        "                      AND (fi.cleared_at IS NULL OR m.measured_at <= fi.cleared_at)) "
         " ORDER BY measured_at, id", (window_sec,), role="healing")
 
     grouped: dict[tuple[str, str], list[dict]] = {}
@@ -96,12 +103,21 @@ def open_incident(signal: dict) -> str:
 
 
 
-def close_incident(incident_id: str, *, recovered: bool) -> None:
+def close_incident(incident_id: str, *, recovered: bool, manual_check: bool = False) -> None:
     """사건을 닫는다. 칸 이름은 `healing.incident` 그대로다 — `recovered_at` 은 없다.
 
     복구 완료는 `resolved_at`, 자동 복구 실패는 `failed_at` + `escalated_at` 이다.
     `recovery_started_at` 은 처음 값을 지킨다 — MTTR 구간이 뒤로 밀리면 안 된다.
+
+    `manual_check` 는 담당자 확인으로 넘긴 경우다 — F-5 가 NEEDS_REVIEW 로 끝나는 것은
+    안전한 기대 결과이지 복구도 실패도 아니다. 복구 시각 · 실패 시각을 지어내지 않는다.
     """
+    if manual_check:
+        db.execute("UPDATE healing.incident SET status='manual_check',status_label=%s,"
+                   "recovery_started_at=COALESCE(recovery_started_at,detected_at),"
+                   "escalated_at=NOW() WHERE incident_id=%s",
+                   ("담당자 확인 필요", incident_id), role="healing")
+        return
     if recovered:
         db.execute("UPDATE healing.incident SET status='recovered',status_label=%s,"
                    "recovery_started_at=COALESCE(recovery_started_at,detected_at),"

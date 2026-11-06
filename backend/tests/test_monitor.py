@@ -17,7 +17,13 @@ def _metric(metric_key, target, mid, breached=True):
 @pytest.fixture
 def fake_db(monkeypatch):
     state = {"rows": [], "open": set(), "executed": []}
-    monkeypatch.setattr(monitor.db, "fetch_all", lambda sql, params=None, **k: list(state["rows"]))
+    state["sqls"] = []
+
+    def fetch_all(sql, params=None, **k):
+        state["sqls"].append(sql)
+        return list(state["rows"])
+
+    monkeypatch.setattr(monitor.db, "fetch_all", fetch_all)
     monkeypatch.setattr(monitor.db, "fetch_one",
                         lambda sql, params=None, **k: {"n": 1} if params and params[0] in state["open"] else {"n": 0})
     monkeypatch.setattr(monitor.db, "execute",
@@ -123,3 +129,28 @@ def test_closing_keeps_the_first_recovery_start(fake_db):
     monitor.close_incident("INC-3", recovered=True)
     (sql, _), = [x for x in fake_db["executed"] if "UPDATE healing.incident" in x[0]]
     assert "COALESCE(recovery_started_at" in sql
+
+
+# --- 담당자 확인으로 넘긴 사건 ----------------------------------------------------------------
+# F-5 가 NEEDS_REVIEW 로 끝나는 것은 **안전한 기대 결과**다(AI 가 임의 확정하지 않고 사람에게 넘김).
+# 복구도 실패도 아니므로 manual_check 로 닫고 에스컬레이션 시각만 남긴다.
+def test_closing_to_manual_check_does_not_claim_recovery_or_failure(fake_db):
+    monitor.close_incident("INC-4", recovered=False, manual_check=True)
+    (sql, _), = [x for x in fake_db["executed"] if "UPDATE healing.incident" in x[0]]
+    flat = sql.replace(" ", "")
+    assert "status='manual_check'" in flat and "escalated_at=NOW()" in flat
+    assert "resolved_at=NOW()" not in flat and "failed_at=NOW()" not in flat
+
+
+# --- 시험 구간의 관측은 실제 사건이 아니다 -----------------------------------------------------
+# 실측 결함 2026-11-06: F-1 장애 시험을 돌리자 그 주입으로 생긴 5xx 관측이 **실제 사건**으로
+# 기록됐다(is_verification_run=false). 시험 사건과 실제 사건이 섞이면 SC-4 무인 복구율과
+# 사건 수가 오염된다 — R-14(측정 오염)와 같은 종류다.
+# 걸러내는 기준은 `healing.fault_injection` 의 run_id 다 — 시험 주입에만 run_id 가 있다.
+def test_signals_exclude_observations_made_during_a_test_injection(fake_db):
+    fake_db["rows"] = [_metric("timeout_count", "order_interpreter_primary", 1)]
+    monitor.pending_signals()
+    sql = fake_db["sqls"][0]
+    assert "healing.fault_injection" in sql and "run_id IS NOT NULL" in sql, sql
+    # 주입 구간과 겹치는 관측만 빼야 한다 — 주입 전후의 실제 장애는 그대로 사건이 된다
+    assert "injected_at" in sql and "cleared_at" in sql

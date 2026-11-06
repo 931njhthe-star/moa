@@ -521,6 +521,13 @@ def _run(run: dict) -> None:
                   or "승인 대기" in (result.get("detail") or "")):
                 iteration_status = "AWAITING_APPROVAL"
             result["status"] = iteration_status
+            # 시험 사건도 닫는다. 닫지 않으면 대시보드 E 블록에 "주문 해석 오류 응답"으로 영원히 남고
+            # (실측 2026-11-06: 시험 사건 2건이 detected 로 방치), 같은 장애의 열린 사건이 있다는
+            # 이유로 다음 사건 생성까지 막는다. AWAITING_APPROVAL 은 사람 승인을 기다리는 정상 상태라 둔다
+            if result.get("incident_id") and iteration_status in ("PASS", "FAIL", "NEEDS_REVIEW"):
+                monitor.close_incident(result["incident_id"],
+                                       recovered=(iteration_status == "PASS"),
+                                       manual_check=(iteration_status == "NEEDS_REVIEW"))
             results.append(result)
             db.execute("UPDATE healing.workflow_iteration SET status=%s,phase='verified',incident_id=%s,"
                        "synthetic_requests=%s,result=%s::jsonb,finished_at=NOW(),mttd_ms=%s,mttr_ms=%s "

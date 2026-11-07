@@ -233,3 +233,86 @@ def export_run(run_id: str) -> dict | None:
                                              "total_iterations","current_iteration","summary",
                                              "created_at","started_at","finished_at")},
             "iterations": data["iterations"], "events": data["events"]}
+
+# --- D 장애 시험 결과 격자 (운영 대시보드 블록 D · PRD 5.6.1) ---------------------------------
+# 유형별 **최신 5회차**를 여러 run 에 걸쳐 모아 `moa/ops_view.trial_summary` 가 먹는 모양으로 낸다.
+# 빠른 확인(quick)을 여러 번 돌려도 격자가 채워지게 하려고 run 하나로 묶지 않는다(2026-11-06 결정).
+TRIALS_PER_FAULT = 5
+
+# status -> 칸. 어휘는 ops_view.trial_summary 가 정한 것이다
+#   auto      사람 없이 복구  분자 · 분모
+#   approved  승인 · 수동     분모만 — 사람이 개입해 끝난 회차는 분모에 남기고 실패로 센다(PRD 5.6.1)
+#   failed    실패           분모만
+#   invalid   무효           분모 밖 — 주입 도구 오류 · 준비 실패
+#   running   진행 중        분모 밖 (아직 안 한 회차는 pending)
+_CELL_BY_STATUS = {"PASS": "auto", "AWAITING_APPROVAL": "approved", "NEEDS_REVIEW": "approved",
+                   "FAIL": "failed", "INVALID": "invalid", "running": "running", "queued": "pending"}
+# F-4 는 안전 전환 여부만 보는 별도 줄이다(분모 25회 밖).
+# 차단 후 승인 대기도 전환이 일어난 것이다 — healing 의 F-4 기대 결과가 "단일 probe 또는 승인 대기"다
+_F4_CELL_BY_STATUS = {"PASS": "switched", "AWAITING_APPROVAL": "switched",
+                      "FAIL": "not_switched", "NEEDS_REVIEW": "not_switched"}
+
+
+def _trial_cell(row: dict) -> dict:
+    """칸 하나 — 초는 SC-3 정본 `recovered_at - injected_at` 이다.
+
+    healing 이 적는 mttr_ms 는 **탐지 기준**(`검증 통과 - 탐지`)이라 SC-3 과 다르다(PRD R-20).
+    R-20 의 해소 지침대로 정본은 주입 기준(mttd + mttr)으로 내고, 탐지 기준은 `mttr_sec` 로 따로 둔다 —
+    한 칸에서 두 정의가 섞이면 60초 목표 초과 판정이 조용히 틀린다.
+    """
+    mttd, mttr = row.get("mttd_ms"), row.get("mttr_ms")
+    total_ms = None if mttr is None else (mttd or 0) + mttr
+    return {"result": _CELL_BY_STATUS.get(row.get("status"), "pending"),
+            "sec": None if total_ms is None else round(total_ms / 1000),
+            "mttr_sec": None if mttr is None else round(mttr / 1000)}
+
+
+def trials_grid(per_fault: int = TRIALS_PER_FAULT) -> dict:
+    """유형별 최신 N회차 격자. 모양은 `{"total_runs", "rows": [{"fault", "cells"}], "f4"}`.
+
+    기록이 아예 없으면 `rows` 를 비워 둔다 — ops_view 가 그때 "아직 없음" 안내를 띄운다.
+    하나라도 있으면 복구 대상 5종의 줄을 모두 둔다. 격자에 구멍이 나면 보는 사람이
+    "아직 안 한 유형"과 "줄이 빠진 유형"을 구분할 수 없다.
+    """
+    rows = db.fetch_all(
+        "SELECT fault_type,status,mttd_ms,mttr_ms FROM ("
+        " SELECT i.fault_type,i.status,i.mttd_ms,i.mttr_ms,"
+        "        ROW_NUMBER() OVER (PARTITION BY i.fault_type"
+        "          ORDER BY COALESCE(i.finished_at,i.started_at) DESC NULLS LAST,"
+        "                   i.run_id DESC, i.iteration_no DESC) AS rn"
+        "   FROM healing.workflow_iteration i) t"
+        " WHERE rn <= %s ORDER BY fault_type, rn DESC", (per_fault,), role="healing")
+    total_runs = per_fault * len(RECOVERABLE)
+    if not rows:
+        return {"total_runs": total_runs, "rows": [], "f4": None, "latest_run": None}
+    by_fault: dict[str, list[dict]] = {}
+    for row in rows:
+        by_fault.setdefault(row["fault_type"], []).append(row)
+    grid = [{"fault": fault, "cells": [_trial_cell(r) for r in by_fault.get(fault, [])]}
+            for fault in RECOVERABLE]
+    f4_rows = by_fault.get("F-4") or []
+    f4 = {"fault": "F-4",
+          "cells": [{"result": _F4_CELL_BY_STATUS.get(r.get("status"), "pending")} for r in f4_rows]}
+    return {"total_runs": total_runs, "rows": grid, "f4": f4 if f4_rows else None,
+            "latest_run": _latest_run()}
+
+
+def _latest_run() -> dict | None:
+    """격자 위에 적을 최신 실행 — 실행 ID와 예상 흐름 일치 수.
+
+    "25회 중 몇 회를 했는가"만으로는 **어느 실행의 숫자인지** 알 수 없어 캡처가 증빙이 되지 않는다.
+    일치는 `PASS`(예상대로 통과) ÷ 판정이 난 회차다. 진행 중 · 대기 회차는 분모에서 뺀다.
+    """
+    try:
+        row = db.fetch_one(
+            "SELECT run_id, summary FROM healing.workflow_run ORDER BY created_at DESC LIMIT 1",
+            role="healing")
+    except (db.DbUnavailable, psycopg.Error):
+        return None     # 실행 이름을 못 읽었다고 격자를 통째로 비우지 않는다
+    if not row:
+        return None
+    summary = row.get("summary") or {}
+    ok = int(summary.get("pass") or 0)
+    valid = ok + int(summary.get("fail") or 0) + int(summary.get("needs_review") or 0)         + int(summary.get("awaiting_approval") or 0)
+    return {"run_id": row["run_id"], "ok": ok, "valid": valid,
+            "avg_mttd_ms": summary.get("avg_mttd_ms"), "avg_mttr_ms": summary.get("avg_mttr_ms")}

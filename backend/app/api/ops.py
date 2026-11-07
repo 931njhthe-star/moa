@@ -8,6 +8,7 @@ import io
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 from app import envelope, logging_setup
 from app.api import deps
@@ -106,6 +107,12 @@ async def fault(request: Request, _: str = Depends(deps.ops_token)):
     return envelope.ok(result)
 
 
+@router.get("/trials")
+def trials(_: str = Depends(deps.ops_token)):
+    """D 장애 시험 결과 격자 — 유형별 최신 5회차(운영 대시보드 블록 D)."""
+    return envelope.ok(workflows.trials_grid())
+
+
 @router.get("/workflows/templates")
 def workflow_templates(_: str = Depends(deps.ops_token)):
     return envelope.ok({"templates": workflows.templates()})
@@ -114,9 +121,13 @@ def workflow_templates(_: str = Depends(deps.ops_token)):
 @router.post("/workflows/preflight")
 async def workflow_preflight(request: Request, _: str = Depends(deps.ops_token)):
     body = await _body(request)
-    return envelope.ok(workflows.preflight(mode=body.get("mode", "quick"),
-                                           fault_type=body.get("fault_type", "F-1"),
-                                           target=body.get("target")))
+    # 스레드풀로 넘긴다 — preflight 는 Gateway · 해석기 · A/B backend 를 **동기** httpx 로 부른다.
+    # `async def` 안에서 그대로 돌리면 이벤트 루프가 막혀 백엔드가 그 동안 모든 요청을 못 받는다
+    # (실측 2026-11-06: 환경 확인 1회에 7초 응답 불가 · 자기 자신을 부르는 A backend 점검이 ReadTimeout).
+    check = await run_in_threadpool(workflows.preflight, mode=body.get("mode", "quick"),
+                                    fault_type=body.get("fault_type", "F-1"),
+                                    target=body.get("target"))
+    return envelope.ok(check)
 
 
 @router.post("/workflows")
@@ -125,7 +136,9 @@ async def workflow_create(request: Request,
                           _: str = Depends(deps.ops_token)):
     body = await _body(request)
     try:
-        result = workflows.create_run(
+        # create_run 도 안에서 preflight 를 부르므로 같은 이유로 스레드풀로 넘긴다
+        result = await run_in_threadpool(
+            workflows.create_run,
             mode=body.get("mode", "quick"), fault_type=body.get("fault_type", "F-1"),
             target=body.get("target"), repetitions=int(body.get("repetitions", 1)),
             injection_seconds=int(body.get("injection_seconds", 1)),

@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg
 
-from app import config, db, ids
+from app import config, db, ids, logging_setup
 from app.contracts import TASK_CONTRACTS
 from app.interpreter_client import InterpreterError, interpret_resilient
-from app.services import incidents, menu, workflows
+from app.services import incidents, menu, metrics, monitor, workflows
 
 LOG = logging.getLogger("moa.healing")
 WORKER_ID = os.getenv("HOSTNAME") or socket.gethostname()
@@ -195,9 +195,9 @@ def _create_incident(run_id: str, iteration: int, fault: str, injection_id: str,
     incident_id = "INC-WF-" + secrets.token_hex(6).upper()
     code = F_CODE[fault]
     trace_id = f"tr_{secrets.token_hex(6).upper()}"
-    db.execute("INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
+    db.execute("INSERT INTO healing.incident(incident_id,trace_id,fault_code,target,status,status_label,"
                "injected_at,detected_at,detection_metric,detection_evidence,is_verification_run,run_id) "
-               "SELECT %s,%s,%s,'detected',%s,injected_at,NOW(),'workflow_signal',ARRAY[%s],true,%s "
+               "SELECT %s,%s,%s,target,'detected',%s,injected_at,NOW(),'workflow_signal',ARRAY[%s],true,%s "
                "FROM healing.fault_injection WHERE injection_id=%s",
                (incident_id, trace_id, code, INCIDENT_LABELS[code], evidence, run_id, injection_id), role="healing")
     db.execute("UPDATE healing.workflow_iteration SET incident_id=%s WHERE run_id=%s AND iteration_no=%s",
@@ -209,6 +209,20 @@ def _create_incident(run_id: str, iteration: int, fault: str, injection_id: str,
 
 def _service_for(target: str) -> str:
     return "backup" if target.endswith("backup") else "primary"
+
+
+def _cooldown_remaining(target: str, cap: float = 90.0) -> float:
+    """회로 냉각이 끝날 때까지 남은 초 (+1초 여유).
+
+    회차 시작부터 60초를 세면 안 된다 — 회로는 연속 3회 실패가 **다 난 뒤에** 열리므로
+    그만큼 냉각이 늦게 끝난다. 실측 2026-11-06: 60초에 probe 해 `cooldown_until<=NOW()` 에
+    걸려 "cooldown 또는 circuit_open 상태가 준비되지 않아" 로 F-4 가 늘 FAIL 이었다.
+    """
+    key = f"order_interpreter_{_service_for(target)}"
+    row = db.fetch_one(
+        "SELECT GREATEST(0, EXTRACT(EPOCH FROM (cooldown_until - NOW()))) AS s "
+        "  FROM healing.circuit_state WHERE dependency_key=%s", (key,), role="healing")
+    return min(float((row or {}).get("s") or 0) + 1.0, cap)
 
 
 def _probe_circuit(target: str, run_id: str, incident_id: str) -> tuple[bool, str]:
@@ -284,6 +298,37 @@ def _docker_action(target: str, action: str) -> tuple[bool, str]:
     return True, f"Docker {action} accepted"
 
 
+_STATUS_COL = 17          # HAProxy CSV 의 status 칸 (pxname,svname,... 다음 17번째)
+
+
+def _gateway_status_from_csv(csv: str, letter: str) -> str | None:
+    """`chk_{letter}/backend` 서버의 상태 문자열. 줄을 못 찾으면 None("모른다")."""
+    prefix = f"chk_{letter},backend,"
+    for line in csv.splitlines():
+        if line.startswith(prefix):
+            cells = line.split(",")
+            if len(cells) > _STATUS_COL:
+                return cells[_STATUS_COL]
+    return None
+
+
+def _gateway_excluded_from_csv(csv: str, letter: str) -> bool:
+    """게이트웨이가 이 스택을 사용자 트래픽에서 제외했는가.
+
+    컨테이너가 사라지면 HAProxy 는 DOWN 이 아니라 **MAINT (resolution)** 으로 간다
+    (`resolvers docker` · `init-addr libc,none` — DNS 레코드가 없어진다).
+    "DOWN" 문자열만 보면 영원히 못 찾는다 — 실측 2026-11-06: 60초 동안 DOWN 이 한 번도 안 나와
+    F-3 검증이 "예상과 다름"으로 늘 실패했다. 상태가 UP 으로 시작하지 않으면 제외된 것으로 본다.
+    줄을 못 찾았으면 "모른다"이므로 제외됐다고 하지 않는다 — 모르는 것을 근거로 통과시키지 않는다.
+    """
+    status = _gateway_status_from_csv(csv, letter)
+    return bool(status) and not status.startswith("UP")
+
+
+def _gateway_csv() -> str:
+    return httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0).text
+
+
 def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=None) -> tuple[bool, str, int | None]:
     started = time.monotonic()
     action_started = time.monotonic()
@@ -293,7 +338,8 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
                           "duration_ms": int((time.monotonic() - action_started) * 1000)})
     if not stopped:
         return False, detail, None
-    down_deadline = time.monotonic() + 10
+    # MAINT(resolution) 로 넘어가는 데 실측 약 9초가 걸린다 — 10초는 너무 빡빡했다
+    down_deadline = time.monotonic() + 20
     observed_down = False
     gateway_down = False
     detected_ms = None
@@ -304,9 +350,7 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
         except httpx.HTTPError:
             observed_down = True
         try:
-            stats = httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0)
-            gateway_down = any(line.startswith(f"chk_{letter},backend,") and "DOWN" in line
-                               for line in stats.text.splitlines())
+            gateway_down = _gateway_excluded_from_csv(_gateway_csv(), letter)
         except httpx.HTTPError:
             pass
         if observed_down and gateway_down:
@@ -333,10 +377,11 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
         verification_polls += 1
         try:
             backend = httpx.get(f"http://{target}:8000/ready", timeout=1.0)
-            frontend = httpx.get(f"http://moa-{letter}-frontend-1:8501/_stcore/health", timeout=1.0)
-            stats = httpx.get(os.getenv("GATEWAY_STATS_URL", "http://gateway:8404/stats;csv"), timeout=1.0)
-            gateway_up = any(line.startswith(f"chk_{letter},backend,") and "UP" in line
-                             for line in stats.text.splitlines())
+            # 프런트엔드는 A/B 격리 네트워크에만 있어 healing 에서 이름으로 닿지 않는다.
+            # 게이트웨이에 sticky 쿠키를 붙여 그 스택의 프런트엔드를 고른다(preflight 와 같은 방식)
+            frontend = httpx.get("http://gateway:8501/_stcore/health", timeout=1.0,
+                                 headers={"Cookie": f"MOA_STACK={letter}"})
+            gateway_up = (_gateway_status_from_csv(_gateway_csv(), letter) or "").startswith("UP")
             consecutive = consecutive + 1 if backend.status_code == 200 and frontend.status_code == 200 and gateway_up else 0
             if consecutive >= 3:
                 passed = observed_down and gateway_down and not cancelled
@@ -355,6 +400,39 @@ def _restart_backend(target: str, run_id: str, seconds: int, attempt_observer=No
                           "duration_ms": int((time.monotonic() - verification_started) * 1000)})
     return False, "backend/frontend independent verification failed within 30 seconds", detected_ms
 
+INJECTION_WAIT_SEC = 6.0     # 해석 서비스 모드 캐시(2초)보다 넉넉히 둔다
+
+
+def _interpreter_url(target: str) -> str | None:
+    url = (config.ORDER_INTERPRETER_BACKUP_URL if target.endswith("backup")
+           else config.ORDER_INTERPRETER_PRIMARY_URL)
+    return url or None
+
+
+def _wait_injection_live(target: str, mode: str, run_id: str, no: int) -> bool:
+    """주입이 **실제로 적용될 때까지** 기다린다. 적용된 시각부터 재야 MTTD 가 정직하다.
+
+    해석 서비스는 장애 모드를 2초간 캐시한다(interpreter/main.py `_MODE_TTL_SEC`).
+    그 전에 보낸 요청은 정상으로 응답하므로 주입 직후부터 재면 **장애가 없던 구간이 MTTD 에 섞인다**.
+    실측 2026-11-06: F-2 · F-5 의 첫 합성 요청이 성공해 시도 기록이 "primary:성공" 하나뿐이었고,
+    F-4 는 연속 3회 실패 전제를 못 채워 FAIL 로 끝났다.
+    """
+    url = _interpreter_url(target)
+    if not url:
+        return True
+    deadline = time.monotonic() + INJECTION_WAIT_SEC
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{url}/health", timeout=2.0).json().get("mode") == mode:
+                return True
+        except (httpx.HTTPError, ValueError):
+            pass
+        time.sleep(0.3)
+    _event(run_id, "injection_not_applied", f"주입 적용을 {INJECTION_WAIT_SEC:.0f}초 안에 확인하지 못함",
+           no, {"target": target, "mode": mode})
+    return False
+
+
 def _execute_case(run_id: str, no: int, case: dict) -> dict:
     fault, target, seconds = case["fault_type"], case["target"], int(case["seconds"])
     default_target, mode = workflows.FAULT_DEFAULTS[fault]
@@ -370,18 +448,28 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
         # Warm this exact brand/version cache before injecting the menu read fault.
         preloaded_checksum = menu.catalog("generic", config.MENU_VERSION).get("checksum")
     attempts: list[dict] = []
+    first_fault_at: float | None = None      # 장애를 **처음 관측한** 시각 (MTTD 의 끝점)
 
     def record_attempt(item: dict) -> None:
+        nonlocal first_fault_at
         entry = dict(item)
         entry["request_attempt_no"] = entry.get("attempt_no")
         entry["attempt_no"] = len(attempts) + 1
         attempts.append(entry)
+        if first_fault_at is None and entry.get("outcome") == "실패":
+            first_fault_at = time.monotonic()
         _event(run_id, "recovery_attempt",
                f"시도 {entry.get('attempt_no')}: "
                f"{entry.get('service') or entry.get('action') or '해석 요청'} · "
                f"{entry.get('outcome') or entry.get('result') or '기록'}", no, entry)
 
+    # 회차는 서로 독립이어야 한다 — 앞 회차가 열어 둔 회로를 물려받으면 1차를 건너뛰어
+    # 실패를 관측하지 못하고 MTTD · MTTR 이 뒤바뀐다(실측 2026-11-06 F-2 · F-5)
+    monitor.reset_circuits()
     injection_id = _inject(run_id, no, fault, target, mode)
+    # 주입이 적용된 뒤부터 잰다 — 해석 서비스의 모드 캐시 때문에 직후 요청은 아직 정상이다
+    if target.startswith("order_interpreter_"):
+        _wait_injection_live(target, mode, run_id, no)
     start = time.monotonic()
     _update_run(run_id, phase="detecting", iteration=no)
     detected_at = None
@@ -420,12 +508,17 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
             samples = 3 if fault == "F-4" else 5 if fault == "F-1" else 1
             verdict, detail, request_count = _synthetic_interpreter_request(fault, target, samples, run_id, record_attempt)
             _update_run(run_id, phase="verifying", iteration=no)
-            detected_at = time.monotonic()
+            # 탐지 시각은 **첫 관측 실패**다. 복구 관측이 다 끝난 뒤에 찍으면 MTTD 가 복구 시간까지
+            # 흡수해 과대해지고 MTTR 이 0 에 가까워진다 — 실측 2026-11-06: mttd 12,611ms · mttr 13ms.
+            # SC-3(복구 60초)이 늘 통과하는 거짓 합격이 되므로 판정이 무의미해진다.
+            # 실패를 한 번도 관측하지 못했으면(대체 경로로 바로 성공) 지금을 쓴다 — 그 회차는
+            # 애초에 1차 장애를 거치지 않았다는 뜻이고, attempts 기록에 그 사실이 남는다
+            detected_at = first_fault_at or time.monotonic()
             incident_id = _create_incident(run_id, no, fault, injection_id, detail)
             if fault == "F-4":
                 _clear(run_id, injection_id)
                 _update_run(run_id, phase="cooldown_probe", iteration=no)
-                if _sleep_or_stop(run_id, max(0, 60 - (time.monotonic() - start))):
+                if _sleep_or_stop(run_id, _cooldown_remaining(target)):
                     verdict, detail = False, "중지 요청으로 cooldown/probe를 중단했습니다"
                 else:
                     probe_started = time.monotonic()
@@ -512,6 +605,13 @@ def _run(run: dict) -> None:
                   or "승인 대기" in (result.get("detail") or "")):
                 iteration_status = "AWAITING_APPROVAL"
             result["status"] = iteration_status
+            # 시험 사건도 닫는다. 닫지 않으면 대시보드 E 블록에 "주문 해석 오류 응답"으로 영원히 남고
+            # (실측 2026-11-06: 시험 사건 2건이 detected 로 방치), 같은 장애의 열린 사건이 있다는
+            # 이유로 다음 사건 생성까지 막는다. AWAITING_APPROVAL 은 사람 승인을 기다리는 정상 상태라 둔다
+            if result.get("incident_id") and iteration_status in ("PASS", "FAIL", "NEEDS_REVIEW"):
+                monitor.close_incident(result["incident_id"],
+                                       recovered=(iteration_status == "PASS"),
+                                       manual_check=(iteration_status == "NEEDS_REVIEW"))
             results.append(result)
             db.execute("UPDATE healing.workflow_iteration SET status=%s,phase='verified',incident_id=%s,"
                        "synthetic_requests=%s,result=%s::jsonb,finished_at=NOW(),mttd_ms=%s,mttr_ms=%s "
@@ -561,13 +661,289 @@ def _run(run: dict) -> None:
                    (run_id, WORKER_ID), role="healing")
 
 
+CODE_FAULT = {code: fault for fault, code in F_CODE.items()}
+
+# F-3 상시 감시 (PRD 5.6.1 "헬스체크 연속 2회 실패" · 5.6 "준비 대기 최대 30초")
+HEALTH_EVERY_SEC = 5.0
+HEALTH_FAIL_NEEDED = 2
+READY_WAIT_SEC = 30
+_HEALTH_FAILS: dict[str, int] = {}
+_RESTARTS: dict[str, list[float]] = {}
+_HEALTH_AT = 0.0
+
+
+def _ready(target: str, timeout: float = 2.0) -> bool:
+    try:
+        return httpx.get(f"http://{target}:8000/ready", timeout=timeout).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+DB_EVERY_SEC = 5.0
+_DB_AT = 0.0
+_DB_OUTAGE = monitor.DbOutage()
+
+
+def _db_watch() -> None:
+    """F-6 상시 감시 (필수 FT-03) — DB 를 직접 찔러 보고, 끊긴 구간을 메모리에 보류한다.
+
+    사건 기록이 같은 DB 에 있으므로 끊긴 동안에는 적을 수 없다. 복구된 순간에 보류한
+    탐지 · 복구 시각으로 완결된 사건을 한 번에 적는다. 서비스는 그 사이 메뉴 캐시 폴백으로 산다.
+    여기서는 예외를 밖으로 내지 않는다 — 이 단계가 멈추면 F-6 을 영영 알 수 없다.
+    """
+    global _DB_AT
+    if time.monotonic() - _DB_AT < DB_EVERY_SEC:
+        return
+    _DB_AT = time.monotonic()
+    try:
+        db.fetch_one("SELECT 1 AS ok", role="healing")
+        ok = True
+    except Exception:      # noqa: BLE001 — 어떤 실패든 "지금 못 쓴다"로 본다
+        ok = False
+    if not ok:
+        logging_setup.log("db_unavailable", level="warning", detail="healing 저장소 조회 실패")
+    record = _DB_OUTAGE.observe(ok=ok, now=time.monotonic())
+    if not record:
+        return
+    seconds = record["resolved_at"] - record["detected_at"]
+    try:
+        incident_id = monitor.report_db_outage(
+            record, evidence=[f"healing 저장소 조회 연속 {record['failures']}회 실패",
+                              f"끊긴 구간 약 {seconds:.0f}초"])
+    except Exception:      # noqa: BLE001 — 막 돌아온 DB 가 다시 끊길 수 있다. 다음 순회에 다시 본다
+        LOG.exception("db outage report failed")
+        return
+    if incident_id:
+        logging_setup.log("incident_detected", incident_id=incident_id, fault_code="DB_UNAVAILABLE",
+                          target="menu_store", detection_metric="db_connection_error")
+        logging_setup.log("recovery_verified", incident_id=incident_id,
+                          detail=f"저장소 재연결 확인 · 끊긴 구간 약 {seconds:.0f}초")
+
+
+def _safe(step) -> None:
+    """한 단계의 실패가 나머지를 멈추지 않게 한다.
+
+    DB 장애 중에는 _heartbeat · _monitor · _claim 이 모두 깨진다. 한 줄로 묶어 두면
+    그때 _db_watch 까지 건너뛰어 **F-6 을 탐지할 수 없다**(실측에서 가장 먼저 깨지던 지점).
+    """
+    try:
+        step()
+    except (db.DbUnavailable, psycopg.Error):
+        pass
+    except Exception:      # noqa: BLE001
+        LOG.exception("worker step failed: %s", getattr(step, "__name__", step))
+
+
+_HEALTH_FIRST: dict[str, float] = {}      # 대상별 첫 헬스체크 실패 시각(단조 시계)
+
+
+def _health_watch() -> None:
+    """F-3 상시 감시 — 헬스체크 연속 2회 실패를 처리 프로세스 중단으로 보고 재시작한다.
+
+    1회 실패로 움직이지 않는다(순간 오류 오탐 방지, PRD 5.6.1 "5초 주기 / 연속 2회").
+    3회 이상에서도 다시 만들지 않는다 — 그때는 사건이 이미 열려 있다.
+    """
+    global _HEALTH_AT
+    if time.monotonic() - _HEALTH_AT < HEALTH_EVERY_SEC:
+        return
+    _HEALTH_AT = time.monotonic()
+    for target in (name for name in _allowlist() if "backend" in name):
+        if monitor.test_injection_active(target):
+            _HEALTH_FAILS[target] = 0          # 시험이 복구를 맡는다 — 끼어들면 둘이 같이 재시작한다
+            continue
+        if _ready(target):
+            _HEALTH_FAILS[target] = 0
+            _HEALTH_FIRST.pop(target, None)
+            continue
+        fails = _HEALTH_FAILS[target] = _HEALTH_FAILS.get(target, 0) + 1
+        if fails == 1:
+            # MTTD 의 시작점 — 탐지(연속 2회)보다 한 주기 앞선다. 적어 두지 않으면
+            # "탐지에 얼마나 걸렸나"를 잴 방법이 없다(저절로 난 장애에는 주입 시각이 없다)
+            _HEALTH_FIRST[target] = time.monotonic()
+        metrics.record("conn_fail_count", target, fails, threshold=HEALTH_FAIL_NEEDED,
+                       breached=fails >= HEALTH_FAIL_NEEDED)
+        if fails == HEALTH_FAIL_NEEDED:
+            _recover_worker(target)
+
+
+def _lab_kill_watch() -> None:
+    """도구줄(실습) 장애 주입 중 **프로세스 중단(F-3)** 을 실제로 수행한다.
+
+    해석기(F-1 · F-2 · F-5)와 메뉴 저장소(F-6)는 대상 서비스가 `fault_injection` 을 직접 읽어
+    스스로 모드를 바꾸지만, 프로세스 중단은 **실행하는 주체가 없으면 행만 남는다**
+    (2026-11-07 확인 — 버튼은 눌리고 토스트도 떴지만 컨테이너는 살아 있었다).
+    업무 backend 에는 Docker 권한이 없으므로(socket-proxy 는 healing 전용) 여기서 집행한다.
+
+    시험 회차(`run_id` 있음)는 `_run` 이 맡는다 — 여기서는 run_id 가 없는 행만 본다.
+    멈춘 뒤 주입을 바로 닫는다. **중단은 한 번 일어나는 사건**이지 유지되는 모드가 아니고,
+    되살리는 일은 상시 감시(`_health_watch`)가 평소 경로로 해야 측정이 성립한다.
+    """
+    if config.ENVIRONMENT != "lab":
+        return
+    rows = db.fetch_all(
+        "SELECT injection_id,target FROM healing.fault_injection "
+        " WHERE run_id IS NULL AND action='inject' AND mode='kill' AND cleared_at IS NULL "
+        " ORDER BY injected_at", role="healing")
+    for row in rows:
+        target, injection_id = row["target"], row["injection_id"]
+        other = "moa-b-backend-1" if target == "moa-a-backend-1" else "moa-a-backend-1"
+        if monitor.test_injection_active(target):
+            continue          # 시험이 같은 대상을 쥐고 있다. 다음 순회에 다시 본다
+        if not _ready(other):
+            # 양쪽을 동시에 내리지 않는다 — 서비스가 통째로 멈추면 복구를 관측할 수 없다
+            detail = f"{other} 가 정상이 아니어서 {target} 중지를 건너뛴다"
+            ok = False
+        else:
+            ok, detail = _docker_action(target, "stop")
+        db.execute("UPDATE healing.fault_injection SET cleared_at=NOW() WHERE injection_id=%s",
+                   (injection_id,), role="healing")
+        # 성공은 따로 적지 않는다 — 이어서 상시 감시가 `incident_detected` 를 남긴다.
+        # 실패만 남긴다(로그 event 는 D-03 1.5 고정 목록에서만 쓴다 — 새 이름을 늘리지 않는다)
+        if not ok:
+            logging_setup.log("escalated", level="warning", fault_code="WORKER_DOWN",
+                              target=target, detail=detail)
+        else:
+            LOG.info("lab kill applied: %s (%s)", target, detail)
+
+
+def _recover_worker(target: str) -> None:
+    first = _HEALTH_FIRST.pop(target, None)
+    incident_id = monitor.open_incident_for(
+        "WORKER_DOWN", target, label=INCIDENT_LABELS["WORKER_DOWN"],
+        detection_metric="conn_fail_count",
+        evidence=[f"{target} /ready 연속 {HEALTH_FAIL_NEEDED}회 실패"],
+        first_signal_sec_ago=(time.monotonic() - first) if first else None)
+    if not incident_id:
+        return
+    logging_setup.log("incident_detected", incident_id=incident_id, fault_code="WORKER_DOWN",
+                      target=target, detection_metric="conn_fail_count")
+    stamps = _RESTARTS.setdefault(target, [])
+    now = time.monotonic()
+    if not monitor.restart_allowed(stamps, now=now):
+        # 상한을 넘으면 사람에게 넘긴다 — 올라오지 않는 컨테이너를 영원히 재시작하지 않는다
+        monitor.close_incident(incident_id, recovered=False)
+        logging_setup.log("escalated", level="warning", incident_id=incident_id,
+                          detail=f"{target} 재시작 상한 초과(10분 내 {monitor.RESTART_LIMIT}회)")
+        return
+    logging_setup.log("recovery_started", incident_id=incident_id, fault_code="WORKER_DOWN")
+    ok, detail = _docker_action(target, "restart")
+    stamps.append(now)
+    metrics.record("restart_count", target, 1, threshold=1, breached=True)
+    verified = False
+    if ok:
+        deadline = time.monotonic() + READY_WAIT_SEC
+        while time.monotonic() < deadline and not verified:
+            verified = _ready(target)
+            if not verified:
+                time.sleep(1.0)
+    monitor.close_incident(incident_id, recovered=verified)
+    if verified:
+        _HEALTH_FAILS[target] = 0
+        logging_setup.log("recovery_verified", incident_id=incident_id,
+                          detail=f"{target} 재시작 후 준비 확인")
+    else:
+        logging_setup.log("escalated", level="warning", incident_id=incident_id, detail=detail)
+
+
+def _approval_watch() -> None:
+    """승인받은 사건의 복구를 **실제로 이어서** 한다.
+
+    `healing.approval` 을 읽는 코드가 API 쪽에만 있어서, 운영자가 [승인]을 눌러도
+    상태만 `recovering` 으로 바뀌고 아무도 복구를 시도하지 않았다(2026-11-07 확인).
+    그 사건은 영영 닫히지 않고, 열린 사건으로 세어져 같은 장애의 새 탐지까지 막았다.
+
+    **살아 있는 시험이 쥐고 있는 사건은 건드리지 않는다** — 그쪽은 `_run` 이 주인이다.
+    승인 직후 몇 초는 기다린다(운영자가 거부로 바꿔 누를 수 있다).
+    """
+    rows = db.fetch_all(
+        "SELECT incident_id, fault_code, target FROM healing.incident "
+        " WHERE status = 'recovering' AND updated_at < NOW() - INTERVAL '5 seconds' "
+        "   AND (run_id IS NULL OR run_id NOT IN "
+        "        (SELECT run_id FROM healing.workflow_run "
+        "          WHERE status IN ('queued','running','stop_requested','cleaning'))) "
+        " ORDER BY updated_at LIMIT 5", role="healing")
+    for row in rows:
+        incident_id, code, target = row["incident_id"], row["fault_code"], row["target"]
+        logging_setup.log("recovery_started", incident_id=incident_id, fault_code=code)
+        ok, detail = _retry_after_approval(code, target, incident_id)
+        _close_incident(incident_id, recovered=ok, detail=detail)
+
+
+def _retry_after_approval(code: str, target: str | None, incident_id: str) -> tuple[bool, str]:
+    """승인이 뜻하는 것은 "다시 해 봐"다. 대상 종류마다 다시 해 보는 방법이 다르다."""
+    if target and target.startswith("order_interpreter_"):
+        fault = CODE_FAULT.get(code)
+        if fault:
+            ok, detail, _ = _synthetic_interpreter_request(fault, target, 1, incident_id)
+            return ok, detail
+        return False, f"{code} 는 합성 요청으로 확인할 수 없다"
+    if target and target.endswith("-backend-1"):
+        ok, detail = _docker_action(target, "restart")
+        if not ok:
+            return False, detail
+        deadline = time.monotonic() + READY_WAIT_SEC
+        while time.monotonic() < deadline:
+            if _ready(target):
+                return True, f"{target} 재시작 후 준비 확인"
+            time.sleep(1.0)
+        return False, f"{target} 재시작 뒤 준비되지 않았다"
+    if target == "menu_store":
+        try:
+            db.fetch_one("SELECT 1 AS ok", role="healing")
+            return True, "메뉴 저장소 재조회 성공"
+        except (db.DbUnavailable, psycopg.Error) as exc:
+            return False, f"메뉴 저장소 재조회 실패: {type(exc).__name__}"
+    # 대상을 모르면 복구했다고 적지 않는다 — 지어낸 성공이 무인 복구율을 부풀린다
+    return False, f"다시 시도할 대상을 알 수 없다(target={target})"
+
+
+def _close_incident(incident_id: str, *, recovered: bool, detail: str) -> None:
+    monitor.close_incident(incident_id, recovered=recovered)
+    if recovered:
+        logging_setup.log("recovery_verified", incident_id=incident_id, detail=detail)
+    else:
+        logging_setup.log("escalated", level="warning", incident_id=incident_id, detail=detail)
+
+
+def _monitor() -> None:
+    """상시 감시 — 업무 층이 남긴 메트릭으로 **실제** 사건을 만들고 복구를 독립 검증한다.
+
+    요청 안 복구(재시도 · 대체 전환 · 폴백)는 업무 층이 이미 했다(PRD 5.3 v1.1 복구 경계).
+    여기서 하는 일은 사건을 남기고, 지금 정상인지를 합성 요청으로 **독립 검증**한 뒤 닫는 것이다 —
+    복구한 쪽이 스스로 "성공"이라고 판정하지 못하게 한다(5.3 Verification 독립).
+    """
+    for signal in monitor.pending_signals():
+        incident_id = monitor.open_incident(signal)
+        logging_setup.log("incident_detected", incident_id=incident_id,
+                          fault_code=signal["fault_code"], target=signal["target"],
+                          detection_metric=signal["metric_key"], trace_id=signal.get("trace_id"))
+        fault = CODE_FAULT.get(signal["fault_code"])
+        # 합성 요청으로 검증할 수 있는 것은 주문 해석 서비스뿐이다. 그 밖(예외 · 저장소)은
+        # 복구했다고 적지 않는다 — 사건을 먼저 남기고 담당자 확인으로 넘긴다
+        verifiable = fault is not None and signal["target"].startswith("order_interpreter_")
+        if not verifiable or signal["fault_code"] not in monitor.AUTO_RECOVERABLE:
+            # 자동 복구 경로가 없는 장애는 복구했다고 적지 않는다 — 기록만 하고 사람에게 넘긴다
+            monitor.close_incident(incident_id, recovered=False, manual_check=True)
+            logging_setup.log("escalated", level="warning", incident_id=incident_id,
+                              detail=f"{signal['fault_code']} 자동 복구 · 검증 경로 없음 — 담당자 확인")
+            continue
+        logging_setup.log("recovery_started", incident_id=incident_id, fault_code=signal["fault_code"])
+        ok, detail, _ = _synthetic_interpreter_request(fault, signal["target"], 1, incident_id)
+        _close_incident(incident_id, recovered=ok, detail=detail)
+
+
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     if config.ENVIRONMENT != "lab" and os.getenv("HEALING_ENABLE_PRODUCTION_RECOVERY", "0") != "1":
         LOG.warning("lab workflow runner disabled outside ENVIRONMENT=lab")
     while True:
         try:
-            _heartbeat()
+            _db_watch()                   # 맨 먼저 — DB 가 죽으면 아래 단계가 전부 깨진다
+            _safe(_heartbeat)
+            _safe(_monitor)               # 상시 감시는 시험 워크플로와 **나란히** 돈다
+            _safe(_approval_watch)        # 승인받은 사건의 복구를 이어 간다
+            _safe(_lab_kill_watch)        # 도구줄 F-3 집행 — 탐지보다 먼저 둔다
+            _safe(_health_watch)          # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
             run = _claim() if config.ENVIRONMENT == "lab" else None
             if run:
                 _run(run)

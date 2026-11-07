@@ -99,6 +99,22 @@ def test_preview_image_rejected_by_content():
     assert error_of(res)["code"] == "IMAGE_NOT_SUPPORTED"
 
 
+@pytest.mark.parametrize("name", ["chat.csv", "chat.md", "chat.json", "chat"])
+def test_preview_non_txt_text_file_rejected(name):
+    """첨부는 .txt 만 (PRD v1.1 §1) — 내용이 텍스트여도 확장자가 .txt 가 아니면 받지 않는다."""
+    res = client.post("/api/conversations/preview",
+                      files={"file": (name, "[김민수] 아아 톨".encode("utf-8"))})
+    assert res.status_code == 400
+    assert error_of(res)["code"] == "FILE_NOT_SUPPORTED"
+    assert ".txt" in error_of(res)["user_message"]
+
+
+def test_preview_txt_extension_is_case_insensitive():
+    data = client.post("/api/conversations/preview",
+                       files={"file": ("CHAT.TXT", "[김민수] 아아 톨".encode("utf-8"))}).json()["data"]
+    assert data["raw_text"] == "[김민수] 아아 톨"
+
+
 def test_create_session_empty_conversation():
     res = client.post("/api/sessions", json={"raw_text": "   "})
     assert res.status_code == 400
@@ -537,7 +553,7 @@ def test_share_image_is_a_png_with_the_same_card():
     assert data[:8] == PNG_MAGIC                 # 진짜 PNG 인가
     assert len(data) > 2000                      # 빈 캔버스가 아니다
     card = share.build_card(sheet)
-    assert "아이스 아메리카노 톨" in share.render_text(card)
+    assert "아이스 아메리카노 (톨)" in share.render_text(card)
     assert share.view(sheet)["image_available"] is True
 
 

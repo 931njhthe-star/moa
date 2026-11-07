@@ -12,6 +12,7 @@
 에이전트(Intake · Menu · Validation)에 배선하는 것은 D-13 ~ D-15 다. 지금은 이 모듈만 있다.
 """
 
+import datetime as dt
 import time
 
 import httpx
@@ -136,10 +137,17 @@ def interpret_resilient(task: str, messages: list[dict], context: dict, *, servi
         nonlocal attempt_no
         attempt_no += 1
         call_started = time.monotonic()
+        # 지연 임포트 — _save 가 history 를 그렇게 가져오는 것과 같은 이유다(순환 임포트 회피)
+        from app.services import metrics
         try:
             result = interpret(task, messages, context, service=target_service, trace_id=trace_id,
                                session_id=session_id, client=client, timeout=timeout)
         except InterpreterError as exc:
+            # 5.6.1 감지 메트릭 — 업무 층은 관측한 사실만 적는다(PRD 5.3 복구 경계).
+            # 사건을 만들지 않는다 — Monitor 가 이 행들을 세어 판정한다
+            metrics.observe_interpreter(exc.fault_code, target_service,
+                                        int((time.monotonic() - call_started) * 1000),
+                                        trace_id=trace_id)
             if attempt_observer:
                 try:
                     attempt_observer({"attempt_no": attempt_no, "service": target_service,
@@ -148,6 +156,8 @@ def interpret_resilient(task: str, messages: list[dict], context: dict, *, servi
                 except Exception:
                     pass
             raise
+        metrics.observe_interpreter(None, target_service,
+                                    int((time.monotonic() - call_started) * 1000), trace_id=trace_id)
         if attempt_observer:
             try:
                 attempt_observer({"attempt_no": attempt_no, "service": target_service,
@@ -182,6 +192,29 @@ def interpret_resilient(task: str, messages: list[dict], context: dict, *, servi
         return result
 
 
+def circuit_usable(state: str | None, cooldown_until=None, *, now=None) -> bool:
+    """회로 한 행을 보고 **지금 이 서비스를 쓸 수 있는가**.
+
+    두 곳이 회로를 각자 해석하면 한쪽만 고쳐도 다른 쪽에서 조용히 깨진다 —
+    실측 2026-11-06: `_circuit_blocked` 와 `_pick_service` 가 서로 다른 규칙을 써서
+    1차가 영구 차단됐다. 규칙은 여기 하나다.
+
+      up · degraded      쓴다
+      down · probing     쓰지 않는다 (probing 은 healing 이 시험 중이다 — 끼어들지 않는다)
+      circuit_open       냉각이 지났으면 **시험 요청 1회**를 보낸다 (PRD 5.6 F-4 "60초 후 시험 요청 1회").
+                         성공하면 _circuit_record 가 state='up' 으로 닫고, 실패하면 냉각이 다시 걸린다
+    """
+    if state in ("down", "probing"):
+        return False
+    if state != "circuit_open":
+        return True
+    if cooldown_until is None:
+        return False                 # 열어 둘 근거가 없다 — _circuit_record 는 열 때 항상 넣는다
+    moment = now or (dt.datetime.now(cooldown_until.tzinfo) if cooldown_until.tzinfo
+                     else dt.datetime.now())
+    return cooldown_until <= moment
+
+
 def _circuit_blocked(service: str) -> bool:
     if not config.db_configured():
         return False
@@ -191,9 +224,7 @@ def _circuit_blocked(service: str) -> bool:
                            "WHERE dependency_key=%s", (f"order_interpreter_{service}",), role="healing")
         if not row:
             return False
-        if row["state"] in ("down", "probing"):
-            return True
-        return row["state"] == "circuit_open"
+        return not circuit_usable(row["state"], row.get("cooldown_until"))
     except Exception:  # Database health is handled by its own fallback path.
         return False
 

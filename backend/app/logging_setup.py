@@ -4,6 +4,7 @@
 event 이름을 즉흥으로 늘리면 집계가 깨진다.
 """
 
+import datetime as dt
 import json
 import logging
 import logging.handlers
@@ -101,6 +102,9 @@ def new_trace_id() -> str:
 def log(event: str, *, level: str = "info", **fields) -> None:
     if event not in EVENTS:
         raise ValueError(f"로그 event 는 D-03 1.5 의 고정 목록에서만 쓴다: {event}")
-    payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event, "level": level}
+    # UTC · 밀리초 3자리. 로컬 시간대로 적으면 MTTD · MTTR 을 다른 PC 의 로그와 맞출 수 없다
+    # (2026-11-07 QA H-32). 파일 순환의 UTC 자정 설정과 개별 로그의 시각은 별개 조건이다
+    payload = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds"),
+               "event": event, "level": level}
     payload.update({k: v for k, v in fields.items() if v is not None})
     getattr(_logger, level)(json.dumps(payload, ensure_ascii=False))

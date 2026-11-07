@@ -155,7 +155,11 @@ def test_metrics_view_mttr_follows_sc3_and_appends_new_column_last():
     text = (SQL / "04_views.sql").read_text(encoding="utf-8")
     view = text[text.index("CREATE OR REPLACE VIEW healing.v_metrics"):]
     view = view[:view.index(";")]
-    assert "COALESCE(i.injected_at, f.injected_at, i.detected_at)" in view
+    # 시작점에 first_signal_at 이 끼어들었다(2026-11-07) — 저절로 난 장애의 **첫 징후** 시각이다.
+    # SC-3 의 뜻(복구까지 = 장애 시작부터)은 그대로고, 주입 시각이 없을 때 더 이른 관측을 쓴다.
+    assert "COALESCE(i.injected_at, f.injected_at, i.first_signal_at, i.detected_at)" in view
+    # MTTD 도 같은 기준이어야 한다 — 주입 시각이 없으면 첫 징후부터 잰다
+    assert "COALESCE(i.injected_at, f.injected_at, i.first_signal_at)" in view
     # CREATE OR REPLACE VIEW 는 기존 칸 순서를 바꿀 수 없다 — 새 칸은 맨 끝
     select_part = view[:view.index("FROM healing.incident")]
     assert select_part.rstrip().endswith("AS mttr_excl_pause_sec")

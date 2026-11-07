@@ -134,3 +134,56 @@ def test_a_broken_store_does_not_blank_the_status_block(monkeypatch):
         raise incidents.db.DbUnavailable("down")
     monkeypatch.setattr(incidents.db, "fetch_one", boom)
     assert incidents.active_injection() is None
+
+
+# --- 승인 뒤 복구가 이어지는가 (2026-11-07) -------------------------------------------
+# `healing.approval` 을 읽는 코드가 API 에만 있어, [승인]을 눌러도 상태만 recovering 으로
+# 바뀌고 아무도 복구를 시도하지 않았다. 그 사건은 닫히지 않고 같은 장애의 새 탐지까지 막았다.
+@pytest.fixture
+def approved(monkeypatch):
+    state = {"rows": [], "closed": [], "actions": [], "synthetic": (True, "합성 요청 성공", 0),
+             "sql": []}
+
+    def fetch_all(sql, params=None, **k):
+        state["sql"].append(sql)
+        return list(state["rows"])
+
+    monkeypatch.setattr(worker.db, "fetch_all", fetch_all)
+    monkeypatch.setattr(worker, "_close_incident",
+                        lambda iid, *, recovered, detail: state["closed"].append((iid, recovered)))
+    monkeypatch.setattr(worker, "_synthetic_interpreter_request",
+                        lambda *a, **k: state["synthetic"])
+    monkeypatch.setattr(worker, "_docker_action",
+                        lambda t, a: (state["actions"].append((t, a)), (True, "ok"))[1])
+    monkeypatch.setattr(worker, "_ready", lambda t, timeout=2.0: True)
+    return state
+
+
+def test_an_approved_interpreter_fault_is_retried_and_closed(approved):
+    approved["rows"] = [{"incident_id": "INC-1", "fault_code": "DEP_HTTP_5XX",
+                         "target": "order_interpreter_primary"}]
+    worker._approval_watch()
+    assert approved["closed"] == [("INC-1", True)]
+
+
+def test_an_approved_backend_fault_restarts_the_container(approved):
+    approved["rows"] = [{"incident_id": "INC-2", "fault_code": "WORKER_DOWN",
+                         "target": "moa-a-backend-1"}]
+    worker._approval_watch()
+    assert approved["actions"] == [("moa-a-backend-1", "restart")]
+    assert approved["closed"] == [("INC-2", True)]
+
+
+def test_an_unknown_target_is_not_reported_as_recovered(approved):
+    """대상을 모르면 복구했다고 적지 않는다 — 지어낸 성공이 무인 복구율을 부풀린다."""
+    approved["rows"] = [{"incident_id": "INC-3", "fault_code": "UNKNOWN", "target": None}]
+    worker._approval_watch()
+    assert approved["closed"] == [("INC-3", False)]
+
+
+def test_a_live_trial_keeps_its_own_incident(approved):
+    """살아 있는 시험이 쥔 사건은 건드리지 않는다 — 그쪽 주인은 `_run` 이다."""
+    worker._approval_watch()
+    sql = approved["sql"][0]
+    assert "workflow_run" in sql and "'running'" in sql
+    assert "INTERVAL '5 seconds'" in sql      # 거부로 바꿔 누를 틈을 준다

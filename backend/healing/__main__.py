@@ -195,9 +195,9 @@ def _create_incident(run_id: str, iteration: int, fault: str, injection_id: str,
     incident_id = "INC-WF-" + secrets.token_hex(6).upper()
     code = F_CODE[fault]
     trace_id = f"tr_{secrets.token_hex(6).upper()}"
-    db.execute("INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
+    db.execute("INSERT INTO healing.incident(incident_id,trace_id,fault_code,target,status,status_label,"
                "injected_at,detected_at,detection_metric,detection_evidence,is_verification_run,run_id) "
-               "SELECT %s,%s,%s,'detected',%s,injected_at,NOW(),'workflow_signal',ARRAY[%s],true,%s "
+               "SELECT %s,%s,%s,target,'detected',%s,injected_at,NOW(),'workflow_signal',ARRAY[%s],true,%s "
                "FROM healing.fault_injection WHERE injection_id=%s",
                (incident_id, trace_id, code, INCIDENT_LABELS[code], evidence, run_id, injection_id), role="healing")
     db.execute("UPDATE healing.workflow_iteration SET incident_id=%s WHERE run_id=%s AND iteration_no=%s",
@@ -734,6 +734,9 @@ def _safe(step) -> None:
         LOG.exception("worker step failed: %s", getattr(step, "__name__", step))
 
 
+_HEALTH_FIRST: dict[str, float] = {}      # 대상별 첫 헬스체크 실패 시각(단조 시계)
+
+
 def _health_watch() -> None:
     """F-3 상시 감시 — 헬스체크 연속 2회 실패를 처리 프로세스 중단으로 보고 재시작한다.
 
@@ -750,8 +753,13 @@ def _health_watch() -> None:
             continue
         if _ready(target):
             _HEALTH_FAILS[target] = 0
+            _HEALTH_FIRST.pop(target, None)
             continue
         fails = _HEALTH_FAILS[target] = _HEALTH_FAILS.get(target, 0) + 1
+        if fails == 1:
+            # MTTD 의 시작점 — 탐지(연속 2회)보다 한 주기 앞선다. 적어 두지 않으면
+            # "탐지에 얼마나 걸렸나"를 잴 방법이 없다(저절로 난 장애에는 주입 시각이 없다)
+            _HEALTH_FIRST[target] = time.monotonic()
         metrics.record("conn_fail_count", target, fails, threshold=HEALTH_FAIL_NEEDED,
                        breached=fails >= HEALTH_FAIL_NEEDED)
         if fails == HEALTH_FAIL_NEEDED:
@@ -799,10 +807,12 @@ def _lab_kill_watch() -> None:
 
 
 def _recover_worker(target: str) -> None:
+    first = _HEALTH_FIRST.pop(target, None)
     incident_id = monitor.open_incident_for(
         "WORKER_DOWN", target, label=INCIDENT_LABELS["WORKER_DOWN"],
         detection_metric="conn_fail_count",
-        evidence=[f"{target} /ready 연속 {HEALTH_FAIL_NEEDED}회 실패"])
+        evidence=[f"{target} /ready 연속 {HEALTH_FAIL_NEEDED}회 실패"],
+        first_signal_sec_ago=(time.monotonic() - first) if first else None)
     if not incident_id:
         return
     logging_setup.log("incident_detected", incident_id=incident_id, fault_code="WORKER_DOWN",
@@ -833,6 +843,58 @@ def _recover_worker(target: str) -> None:
                           detail=f"{target} 재시작 후 준비 확인")
     else:
         logging_setup.log("escalated", level="warning", incident_id=incident_id, detail=detail)
+
+
+def _approval_watch() -> None:
+    """승인받은 사건의 복구를 **실제로 이어서** 한다.
+
+    `healing.approval` 을 읽는 코드가 API 쪽에만 있어서, 운영자가 [승인]을 눌러도
+    상태만 `recovering` 으로 바뀌고 아무도 복구를 시도하지 않았다(2026-11-07 확인).
+    그 사건은 영영 닫히지 않고, 열린 사건으로 세어져 같은 장애의 새 탐지까지 막았다.
+
+    **살아 있는 시험이 쥐고 있는 사건은 건드리지 않는다** — 그쪽은 `_run` 이 주인이다.
+    승인 직후 몇 초는 기다린다(운영자가 거부로 바꿔 누를 수 있다).
+    """
+    rows = db.fetch_all(
+        "SELECT incident_id, fault_code, target FROM healing.incident "
+        " WHERE status = 'recovering' AND updated_at < NOW() - INTERVAL '5 seconds' "
+        "   AND (run_id IS NULL OR run_id NOT IN "
+        "        (SELECT run_id FROM healing.workflow_run "
+        "          WHERE status IN ('queued','running','stop_requested','cleaning'))) "
+        " ORDER BY updated_at LIMIT 5", role="healing")
+    for row in rows:
+        incident_id, code, target = row["incident_id"], row["fault_code"], row["target"]
+        logging_setup.log("recovery_started", incident_id=incident_id, fault_code=code)
+        ok, detail = _retry_after_approval(code, target, incident_id)
+        _close_incident(incident_id, recovered=ok, detail=detail)
+
+
+def _retry_after_approval(code: str, target: str | None, incident_id: str) -> tuple[bool, str]:
+    """승인이 뜻하는 것은 "다시 해 봐"다. 대상 종류마다 다시 해 보는 방법이 다르다."""
+    if target and target.startswith("order_interpreter_"):
+        fault = CODE_FAULT.get(code)
+        if fault:
+            ok, detail, _ = _synthetic_interpreter_request(fault, target, 1, incident_id)
+            return ok, detail
+        return False, f"{code} 는 합성 요청으로 확인할 수 없다"
+    if target and target.endswith("-backend-1"):
+        ok, detail = _docker_action(target, "restart")
+        if not ok:
+            return False, detail
+        deadline = time.monotonic() + READY_WAIT_SEC
+        while time.monotonic() < deadline:
+            if _ready(target):
+                return True, f"{target} 재시작 후 준비 확인"
+            time.sleep(1.0)
+        return False, f"{target} 재시작 뒤 준비되지 않았다"
+    if target == "menu_store":
+        try:
+            db.fetch_one("SELECT 1 AS ok", role="healing")
+            return True, "메뉴 저장소 재조회 성공"
+        except (db.DbUnavailable, psycopg.Error) as exc:
+            return False, f"메뉴 저장소 재조회 실패: {type(exc).__name__}"
+    # 대상을 모르면 복구했다고 적지 않는다 — 지어낸 성공이 무인 복구율을 부풀린다
+    return False, f"다시 시도할 대상을 알 수 없다(target={target})"
 
 
 def _close_incident(incident_id: str, *, recovered: bool, detail: str) -> None:
@@ -879,6 +941,7 @@ def main() -> None:
             _db_watch()                   # 맨 먼저 — DB 가 죽으면 아래 단계가 전부 깨진다
             _safe(_heartbeat)
             _safe(_monitor)               # 상시 감시는 시험 워크플로와 **나란히** 돈다
+            _safe(_approval_watch)        # 승인받은 사건의 복구를 이어 간다
             _safe(_lab_kill_watch)        # 도구줄 F-3 집행 — 탐지보다 먼저 둔다
             _safe(_health_watch)          # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
             run = _claim() if config.ENVIRONMENT == "lab" else None

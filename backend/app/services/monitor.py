@@ -34,8 +34,13 @@ _RULES = {
 # 수집 훅이 들어오는 단계에서 함께 넣는다. 수집이 없는 규칙을 미리 두면 사건이 만들어지지 않거나,
 # 만들어져도 닫을 검증 경로가 없어 열린 채 쌓인다
 
-# 아직 닫히지 않은 사건 — 같은 장애가 열려 있으면 새로 만들지 않고 증거만 쌓는다(PRD 5.6.1 Monitor 책임)
-_OPEN_STATUSES = ("detected", "recovering", "awaiting_approval", "manual_check")
+# 아직 닫히지 않은 사건 — 같은 장애가 **같은 대상에** 열려 있으면 새로 만들지 않는다(PRD 5.6.1 Monitor 책임).
+#
+# `manual_check` 를 뺐다. 그것은 자동화가 포기하고 **사람에게 넘긴 상태**이지 진행 중이 아니다.
+# 넣어 두면 담당자가 정리할 때까지 그 장애 코드의 새 사건이 영영 열리지 않는다 —
+# 2026-11-07 실측에서 `manual_check` 로 남은 F-5 사건 하나가 F-5 탐지를 통째로 막고 있었다.
+# 같은 장애가 계속 나면 사건이 다시 열려야 한다. 그래야 횟수와 MTTD 가 침묵하지 않는다.
+_OPEN_STATUSES = ("detected", "recovering", "awaiting_approval")
 
 WINDOW_SEC = 60
 
@@ -84,10 +89,17 @@ def pending_signals(window_sec: int = WINDOW_SEC) -> list[dict]:
 
 
 def _open_incident_count(fault_code: str, target: str) -> int:
+    """같은 장애가 **같은 대상에** 열려 있는가.
+
+    `target` 을 받아 놓고 조건에 쓰지 않던 동안, 앱 A 의 F-3 이 열려 있으면 앱 B 의 F-3 을
+    탐지하지 못했다. 복제본 전환(SC-12)은 한쪽이 죽은 동안 다른 쪽을 보는 일이라 치명적이다.
+    대상을 적지 않고 만든 지난 사건(target IS NULL)은 어느 대상과도 겹치지 않는 것으로 본다.
+    """
     row = db.fetch_one(
         "SELECT COUNT(*) AS n FROM healing.incident "
-        " WHERE fault_code = %s AND status = ANY(%s) AND is_verification_run = false",
-        (fault_code, list(_OPEN_STATUSES)), role="healing")
+        " WHERE fault_code = %s AND target IS NOT DISTINCT FROM %s "
+        "   AND status = ANY(%s) AND is_verification_run = false",
+        (fault_code, target, list(_OPEN_STATUSES)), role="healing")
     return (row or {}).get("n", 0)
 
 
@@ -99,11 +111,13 @@ def open_incident(signal: dict) -> str:
     """
     incident_id = "INC-" + secrets.token_hex(6).upper()
     trace_id = signal.get("trace_id") or f"tr_{secrets.token_hex(6).upper()}"
+    # `detected_at` 은 **알아챈 시각**(지금)이고, `first_signal_at` 은 **첫 위반 관측 시각**이다.
+    # 종전에는 detected_at 에 첫 관측 시각을 넣어 둘이 같았고, 그래서 탐지에 걸린 시간을 잴 수 없었다.
     db.execute(
-        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
-        "detected_at,detection_metric,detection_evidence,is_verification_run) "
-        "VALUES (%s,%s,%s,'detected',%s,%s,%s,%s,false)",
-        (incident_id, trace_id, signal["fault_code"], signal["label"],
+        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,target,status,status_label,"
+        "first_signal_at,detected_at,detection_metric,detection_evidence,is_verification_run) "
+        "VALUES (%s,%s,%s,%s,'detected',%s,%s,NOW(),%s,%s,false)",
+        (incident_id, trace_id, signal["fault_code"], signal.get("target"), signal["label"],
          signal["detected_at"], signal["metric_key"], signal["evidence"]), role="healing")
     # 쓴 행에 사건을 묶어 둔다 — 안 하면 다음 순회에서 같은 관측을 또 세어 사건이 쏟아진다
     db.execute("UPDATE healing.runtime_metric SET incident_id = %s WHERE id = ANY(%s)",
@@ -144,17 +158,24 @@ def close_incident(incident_id: str, *, recovered: bool, manual_check: bool = Fa
 # 사건을 만드는 입구가 둘이다. 메트릭을 세는 pending_signals 와, 헬스체크처럼 **직접 관측**하는 이쪽.
 # 둘 다 Monitor 역할이고, 중복 방지 기준(열린 사건)도 같다.
 def open_incident_for(fault_code: str, target: str, *, label: str, detection_metric: str,
-                      evidence: list[str], trace_id: str | None = None) -> str | None:
-    """직접 관측한 장애의 사건. 같은 장애가 이미 열려 있으면 만들지 않고 None 을 돌려준다."""
+                      evidence: list[str], trace_id: str | None = None,
+                      first_signal_sec_ago: float | None = None) -> str | None:
+    """직접 관측한 장애의 사건. 같은 장애가 같은 대상에 열려 있으면 만들지 않고 None 을 돌려준다.
+
+    `first_signal_sec_ago` 는 **첫 징후를 본 지 몇 초 지났는가**다(예: 헬스체크 첫 실패).
+    호출부가 단조 시계로 재므로 초 차이로 받아 DB 시각으로 환산한다 — 시계가 두 벌이 되지 않게.
+    """
     if _open_incident_count(fault_code, target):
         return None
     incident_id = "INC-" + secrets.token_hex(6).upper()
     db.execute(
-        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
-        "detection_metric,detection_evidence,is_verification_run) "
-        "VALUES (%s,%s,%s,'detected',%s,%s,%s,false)",
-        (incident_id, trace_id or f"tr_{secrets.token_hex(6).upper()}", fault_code, label,
-         detection_metric, evidence), role="healing")
+        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,target,status,status_label,"
+        "first_signal_at,detection_metric,detection_evidence,is_verification_run) "
+        "VALUES (%s,%s,%s,%s,'detected',%s,"
+        "        CASE WHEN %s IS NULL THEN NULL ELSE NOW() - (%s * INTERVAL '1 second') END,"
+        "        %s,%s,false)",
+        (incident_id, trace_id or f"tr_{secrets.token_hex(6).upper()}", fault_code, target, label,
+         first_signal_sec_ago, first_signal_sec_ago, detection_metric, evidence), role="healing")
     link_lab_injection(incident_id, target)
     return incident_id
 
@@ -234,20 +255,26 @@ class DbOutage:
     def __init__(self) -> None:
         self.failures = 0
         self.detected_at: float | None = None
+        self.first_failure_at: float | None = None      # 첫 실패 — MTTD 의 시작점
 
     def observe(self, *, ok: bool, now: float) -> dict | None:
         """관측 한 번. **복구된 순간에만** 적을 사건을 돌려주고, 그 밖에는 None 이다."""
         if not ok:
             self.failures += 1
+            if self.failures == 1:
+                self.first_failure_at = now   # 탐지(연속 2회)보다 한 주기 앞선다
             if self.failures == DB_FAIL_NEEDED:
                 self.detected_at = now
             return None
         if self.detected_at is None:
             self.failures = 0                 # 연속 2회에 못 미친 깜빡임은 사건이 아니다
+            self.first_failure_at = None
             return None
-        record = {"detected_at": self.detected_at, "resolved_at": now, "failures": self.failures}
+        record = {"detected_at": self.detected_at, "resolved_at": now, "failures": self.failures,
+                  "first_failure_at": self.first_failure_at or self.detected_at}
         self.failures = 0
         self.detected_at = None
+        self.first_failure_at = None
         return record
 
 
@@ -256,16 +283,18 @@ def report_db_outage(record: dict, *, evidence: list[str]) -> str | None:
     if _open_incident_count("DB_UNAVAILABLE", "menu_store"):
         return None
     incident_id = "INC-" + secrets.token_hex(6).upper()
+    since_detected = record["resolved_at"] - record["detected_at"]
+    since_first = record["resolved_at"] - record.get("first_failure_at", record["detected_at"])
     db.execute(
-        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,status,status_label,"
-        "detected_at,recovery_started_at,resolved_at,detection_metric,detection_evidence,"
-        "is_verification_run) "
-        "VALUES (%s,%s,'DB_UNAVAILABLE','recovered',%s,"
+        "INSERT INTO healing.incident(incident_id,trace_id,fault_code,target,status,status_label,"
+        "first_signal_at,detected_at,recovery_started_at,resolved_at,detection_metric,"
+        "detection_evidence,is_verification_run) "
+        "VALUES (%s,%s,'DB_UNAVAILABLE','menu_store','recovered',%s,"
+        "        NOW() - (%s * INTERVAL '1 second'),"
         "        NOW() - (%s * INTERVAL '1 second'), NOW() - (%s * INTERVAL '1 second'), NOW(),"
         "        'db_connection_error',%s,false)",
         (incident_id, f"tr_{secrets.token_hex(6).upper()}", "메뉴 저장소 연결 끊김",
-         record["resolved_at"] - record["detected_at"],
-         record["resolved_at"] - record["detected_at"], evidence), role="healing")
+         since_first, since_detected, since_detected, evidence), role="healing")
     return incident_id
 
 

@@ -230,7 +230,9 @@ def test_db_outage_reports_the_incident_only_when_it_comes_back():
     out.observe(ok=False, now=105.0)
     assert out.observe(ok=False, now=110.0) is None      # 아직 돌아오지 않았다
     record = out.observe(ok=True, now=118.0)
-    assert record == {"detected_at": 105.0, "resolved_at": 118.0, "failures": 3}
+    # first_failure_at 이 더해졌다 — MTTD 의 시작점(2026-11-07)
+    assert record == {"detected_at": 105.0, "resolved_at": 118.0, "failures": 3,
+                      "first_failure_at": 100.0}
     assert out.detected_at is None                       # 보고한 뒤에는 비운다
 
 
@@ -275,3 +277,59 @@ def test_healing_never_probes_a_frontend_by_container_name():
     assert "frontend-1:8501" not in source, (
         "프런트엔드는 healing 에서 이름으로 닿지 않는다 — 게이트웨이 경유로 확인한다")
     assert "MOA_STACK" in source, "게이트웨이 경유 확인은 sticky 쿠키로 스택을 고른다"
+
+
+# --- 2026-11-07: 대상별 중복 판정 · 첫 징후 시각 -----------------------------------------------
+# 둘 다 "사건이 하나 남아 있으면 그 장애를 영영 못 본다" · "MTTD 를 낼 수 없다" 로 이어지던 것이다.
+@pytest.fixture
+def spy(monkeypatch):
+    calls = {"fetch_one": [], "execute": [], "count": 0}
+
+    def fetch_one(sql, params=None, **k):
+        calls["fetch_one"].append((sql, params))
+        if "fault_injection" in sql:
+            return None
+        return {"n": calls["count"]}
+
+    monkeypatch.setattr(monitor.db, "fetch_one", fetch_one)
+    monkeypatch.setattr(monitor.db, "execute",
+                        lambda sql, params=None, **k: calls["execute"].append((sql, params)))
+    return calls
+
+
+def test_the_same_fault_on_another_target_is_a_new_incident(spy):
+    monitor._open_incident_count("WORKER_DOWN", "moa-b-backend-1")
+    sql, params = spy["fetch_one"][0]
+    assert "target IS NOT DISTINCT FROM" in sql     # 대상을 조건에 쓴다
+    assert params[1] == "moa-b-backend-1"
+
+
+def test_an_escalated_incident_does_not_block_new_detection():
+    """manual_check 는 자동화가 사람에게 넘긴 상태다 — 진행 중이 아니다.
+
+    열린 것으로 세면 담당자가 정리할 때까지 그 장애 코드가 침묵한다.
+    """
+    assert "manual_check" not in monitor._OPEN_STATUSES
+    assert "recovering" in monitor._OPEN_STATUSES     # 복구 중은 여전히 중복을 막는다
+
+
+def test_a_spontaneous_fault_records_when_the_signal_started(spy):
+    signal = {"fault_code": "DEP_TIMEOUT", "target": "order_interpreter_primary",
+              "label": "응답 지연", "metric_key": "timeout_count", "metric_ids": [1],
+              "detected_at": "2026-11-07T00:00:00+00:00", "trace_id": "tr_1",
+              "evidence": ["timeout_count=1"]}
+    monitor.open_incident(signal)
+    sql, params = spy["execute"][0]
+    assert "first_signal_at" in sql
+    assert "detected_at" in sql and "NOW()" in sql          # 알아챈 시각은 지금이다
+    assert "2026-11-07T00:00:00+00:00" in params            # 첫 관측은 신호 시각
+    assert "order_interpreter_primary" in params            # 대상도 적는다
+
+
+def test_a_db_outage_remembers_the_first_failure():
+    out = monitor.DbOutage()
+    assert out.observe(ok=False, now=100.0) is None     # 첫 실패
+    assert out.observe(ok=False, now=105.0) is None     # 탐지(연속 2회)
+    record = out.observe(ok=True, now=120.0)
+    assert record["first_failure_at"] == 100.0
+    assert record["detected_at"] == 105.0               # MTTD 는 5초로 나온다

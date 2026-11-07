@@ -44,6 +44,29 @@ def test_only_cells_over_their_own_target_are_bold():
     assert "<b>81</b>" not in html      # F-3 은 목표 90초 — 81초는 통과
 
 
+def test_grid_shows_strategy_and_detection_metric():
+    """평가 질문(PRD 1.2 P3-2) 두 가지 — 복구 전략 4종 · 유형별 감지 메트릭이 화면에 있는가."""
+    html = ov.trials_html(ov.trial_summary(mock.OPS_TRIALS))
+    assert copy.OD_STRATEGY in html
+    for strategy in ("대체 전환", "재시작 · 재개", "재생성 → 대체모델", "재연결 → 캐시"):
+        assert strategy in html
+    for metric in ("FT-01 timeout_count", "FT-02 agent_error_count",
+                   "FT-03 db_connection_error", "FT-04 schema_error_rate"):
+        assert metric in html
+
+
+def test_grid_head_names_the_run():
+    """어느 실행의 숫자인지 — 실행 ID가 없으면 25회 측정을 캡처로 증빙할 수 없다."""
+    html = ov.trials_html(ov.trial_summary(mock.OPS_TRIALS))
+    assert "run_2ec6c62a" in html and "예상 흐름 일치 23/23" in html
+
+
+def test_grid_head_falls_back_without_run():
+    trials = {k: v for k, v in mock.OPS_TRIALS.items() if k != "latest_run"}
+    html = ov.trials_html(ov.trial_summary(trials))
+    assert "run_" not in html and "23/25회 실시" in html
+
+
 def test_trials_missing_shows_empty_sentence():
     assert ov.trial_summary(None) is None
     assert copy.OD_EMPTY in ov.trials_html(None)
@@ -53,7 +76,8 @@ def test_trials_missing_shows_empty_sentence():
 def test_kpis_match_design():
     cards = ov.kpis(mock.OPS_METRICS, ov.trial_summary(mock.OPS_TRIALS))
     got = {k["key"]: (k["value"], k["extra"], k["verdict"]) for k in cards}
-    assert got == {"mttd": ("8", None, "pass"), "mttr": ("41", "최대 81초", "pass"),
+    # 측정 원본은 ms다 — 초는 소수 1자리로 쓴다(8.4 와 8.0 이 같아 보이지 않게)
+    assert got == {"mttd": ("8.2", None, "pass"), "mttr": ("41.3", "최대 81초", "pass"),
                    "auto": ("18/22", "(82%)", "pass"), "integrity": ("0", None, "pass")}
 
 
@@ -73,7 +97,7 @@ def test_kpi_fails_when_over_target():
 
 # --- A 상태 배너 — 우선순위 위에서 하나만 ------------------------------------------
 @pytest.mark.parametrize("scene, tone, title, sub", [
-    ("approval", "amber", "승인이 필요해요", "원인 미확인 장애(F-3) · 2분 14초 대기"),
+    ("approval", "amber", "승인이 필요해요", "원인 미확인 장애(UNKNOWN) · 2분 14초 대기"),
     ("injected", "gray", "주입 후 3초", "탐지 대기 중 · 주문 해석 오류 응답(F-1) · 5회차"),
     ("recovering", "amber", "복구 중", "주문 해석 오류 응답(F-1) · 22초 경과"),
     ("recovered", "green", "정상 처리 중", "대체 해석기를 쓰고 있어요"),
@@ -123,6 +147,15 @@ def test_route_without_replicas_is_not_invented():
     assert {x["text"] for x in gateway} == {copy.OC_UNKNOWN}
 
 
+def test_route_shows_replica_switch_seconds():
+    """SC-12 — 전환 초는 서버가 줄 때만 쓴다. 없으면 칸을 비운다."""
+    gateway = dict(ov.route(mock.OPS_STATUS)["groups"])["게이트웨이"]
+    assert [x.get("note") for x in gateway] == [None, copy.OC_SWITCH.format(sec=11)]
+    bare = {**mock.OPS_STATUS,
+            "replicas": [{"key": "app_a", "name": "앱 A", "state": "up", "active": True}]}
+    assert dict(ov.route(bare)["groups"])["게이트웨이"][0].get("note") is None
+
+
 def test_route_reads_current_server_shape():
     """지금 서버(services/incidents.status_view) 응답 모양 그대로도 그린다."""
     server = {"services": [
@@ -142,8 +175,9 @@ def test_route_reads_current_server_shape():
 def test_incident_rows_match_design_24():
     rows = ov.incident_rows(mock.ops_scene("approval")["incidents"])
     assert [(r["name"], r["code"], r["ago"], r["elapsed"]) for r in rows] == [
-        ("원인 미확인 장애", "F-3", "2분 전", "대기 중"),
-        ("처리 프로세스 중단", "F-2", "12분 전", "27초"),
+        # UNKNOWN 은 F 코드가 아니다 — 원인 미확인 에스컬레이션(PRD SC-6)
+        ("원인 미확인 장애", "UNKNOWN", "2분 전", "대기 중"),
+        ("처리 프로세스 중단", "F-3", "12분 전", "27초"),
         ("DB 연결 끊김", "F-6", "34분 전", "64초")]
 
 
@@ -154,7 +188,7 @@ def test_incident_rows_from_server_shape_use_korean_names():
         {"incident_id": "INC-1", "fault_code": "DEP_TIMEOUT", "state": "recovered", "state_text": "복구 성공",
          "detected_at_text": "14:02:11", "resolved_at_text": "14:03:05"}]}, now)
     assert (rows[0]["name"], rows[0]["code"], rows[0]["ago"], rows[0]["elapsed"]) == (
-        "해석 응답 지연", "F-5", "10분 전", "54초")
+        "해석 응답 지연", "F-2", "10분 전", "54초")
 
 
 def test_duration_text():
@@ -216,8 +250,12 @@ def _text(at):
 
 
 @pytest.mark.parametrize("case, expected", [
-    ("24 승인 필요", ["승인이 필요해요", "승인 필요 1건", "18/22", "23/25회 실시", "규칙 해석으로 처리 중이에요"]),
-    ("25-1 주입 직후", ["주입 후 3초", "지금 승인할 일이 없어요", "진행 중", "24/25회 실시"]),
+    # 격자 머리는 실행 ID를 밝힌다 — 어느 실행의 숫자인지 모르면 캡처가 증빙이 되지 않는다
+    ("24 승인 필요", ["승인이 필요해요", "승인 필요 1건", "18/22",
+                   "최근 실행 run_2ec6c62a · 격자 23/25칸 · 예상 흐름 일치 23/23", "규칙 해석으로 처리 중이에요",
+                   "복구 전략", "재연결 → 캐시", "FT-03 db_connection_error", "전환 11초 · 목표 15초"]),
+    ("25-1 주입 직후", ["주입 후 3초", "지금 승인할 일이 없어요", "진행 중",
+                    "최근 실행 run_2ec6c62a · 격자 24/25칸 · 예상 흐름 일치 23/23"]),
     ("25-2 복구 중", ["복구 중", "22초 경과", "22초째", "차단 · 20초 후 시험"]),
     ("25-3 복구 완료", ["정상 처리 중", "대체 해석기를 쓰고 있어요", "19/23", "복귀 확인 2/3"]),
     ("26 정상 운영", ["정상 운영 중", "승인 후 복구", "2분 28초"]),
@@ -256,3 +294,14 @@ def test_incident_row_opens_timeline_cards():
     assert not at.exception
     for word in ("주입 0초", "워커 응답 없음 2회 연속", "워커 재시작", "헬스체크 3/3 · 유실 0"):
         assert word in text, word
+
+
+def test_a_run_without_a_verdict_does_not_claim_zero_matches():
+    """막 시작한 실행은 판정이 없다 — `일치 0/0` 은 숫자가 아니라 착각을 만든다."""
+    trials = {**mock._trials("done"),
+              "latest_run": {"run_id": "run_new", "ok": 0, "valid": 0,
+                             "avg_mttd_ms": None, "avg_mttr_ms": None}}
+    html = ov.trials_html(ov.trial_summary(trials))
+    assert "run_new" in html
+    assert "일치" not in html
+    assert "격자" in html

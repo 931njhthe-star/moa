@@ -284,7 +284,7 @@ def trials_grid(per_fault: int = TRIALS_PER_FAULT) -> dict:
         " WHERE rn <= %s ORDER BY fault_type, rn DESC", (per_fault,), role="healing")
     total_runs = per_fault * len(RECOVERABLE)
     if not rows:
-        return {"total_runs": total_runs, "rows": [], "f4": None}
+        return {"total_runs": total_runs, "rows": [], "f4": None, "latest_run": None}
     by_fault: dict[str, list[dict]] = {}
     for row in rows:
         by_fault.setdefault(row["fault_type"], []).append(row)
@@ -293,4 +293,26 @@ def trials_grid(per_fault: int = TRIALS_PER_FAULT) -> dict:
     f4_rows = by_fault.get("F-4") or []
     f4 = {"fault": "F-4",
           "cells": [{"result": _F4_CELL_BY_STATUS.get(r.get("status"), "pending")} for r in f4_rows]}
-    return {"total_runs": total_runs, "rows": grid, "f4": f4 if f4_rows else None}
+    return {"total_runs": total_runs, "rows": grid, "f4": f4 if f4_rows else None,
+            "latest_run": _latest_run()}
+
+
+def _latest_run() -> dict | None:
+    """격자 위에 적을 최신 실행 — 실행 ID와 예상 흐름 일치 수.
+
+    "25회 중 몇 회를 했는가"만으로는 **어느 실행의 숫자인지** 알 수 없어 캡처가 증빙이 되지 않는다.
+    일치는 `PASS`(예상대로 통과) ÷ 판정이 난 회차다. 진행 중 · 대기 회차는 분모에서 뺀다.
+    """
+    try:
+        row = db.fetch_one(
+            "SELECT run_id, summary FROM healing.workflow_run ORDER BY created_at DESC LIMIT 1",
+            role="healing")
+    except (db.DbUnavailable, psycopg.Error):
+        return None     # 실행 이름을 못 읽었다고 격자를 통째로 비우지 않는다
+    if not row:
+        return None
+    summary = row.get("summary") or {}
+    ok = int(summary.get("pass") or 0)
+    valid = ok + int(summary.get("fail") or 0) + int(summary.get("needs_review") or 0)         + int(summary.get("awaiting_approval") or 0)
+    return {"run_id": row["run_id"], "ok": ok, "valid": valid,
+            "avg_mttd_ms": summary.get("avg_mttd_ms"), "avg_mttr_ms": summary.get("avg_mttr_ms")}

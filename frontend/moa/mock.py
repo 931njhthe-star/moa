@@ -466,7 +466,8 @@ OPS_PREVIEW_CASES = {
 }
 
 _REPLICAS_UP = [{"key": "app_a", "name": "앱 A", "state": "up", "active": True},
-                {"key": "app_b", "name": "앱 B", "state": "up", "active": True}]
+                # SC-12 — 복제본 전환은 감지 · 전환 각 15초 이내
+                {"key": "app_b", "name": "앱 B", "state": "up", "active": True, "switch_sec": 11}]
 
 
 def _svc(key, name, state, *, active=False, text="", probe=None, streak=0):
@@ -493,9 +494,11 @@ def _inc(iid, fault, code, state, text, ago, *, elapsed=None, approved=False, de
 
 
 _INC_5 = _inc("INC-0005", "F-6", "DB_UNAVAILABLE", "failed", "실패 · 수동 점검", "34분 전", elapsed=64)
-_INC_6 = _inc("INC-0006", "F-2", "WORKER_DOWN", "recovered", "복구 성공", "12분 전", elapsed=27)
-_INC_7_WAIT = _inc("INC-0007", "F-3", "UNKNOWN", "awaiting_approval", "승인 대기", "2분 전")
-_INC_7_DONE = _inc("INC-0007", "F-3", "UNKNOWN", "recovered", "승인 후 복구", "9분 전", elapsed=148, approved=True)
+_INC_6 = _inc("INC-0006", "F-3", "WORKER_DOWN", "recovered", "복구 성공", "12분 전", elapsed=27)
+# UNKNOWN 은 F 코드가 아니라 원인 미확인 에스컬레이션이다(PRD SC-6) — 코드 자리에 그대로 쓴다
+_INC_7_WAIT = _inc("INC-0007", "UNKNOWN", "UNKNOWN", "awaiting_approval", "승인 대기", "2분 전")
+_INC_7_DONE = _inc("INC-0007", "UNKNOWN", "UNKNOWN", "recovered", "승인 후 복구", "9분 전", elapsed=148,
+                   approved=True)
 
 
 def _cells(*values):
@@ -516,18 +519,21 @@ def _trials(f1_last):
         # F-4 는 무인 복구율 분모 밖이다(PRD 9.1) — 안전 전환 여부만
         "f4": {"fault": "F-4", "cells": [{"result": "switched"}, {"result": "switched"},
                                          {"result": "pending"}, {"result": "pending"}, {"result": "pending"}]},
+        # 어느 실행의 숫자인지 — D 제목줄 오른쪽에 그대로 나온다
+        "latest_run": {"run_id": "run_2ec6c62a", "ok": 23, "valid": 23,
+                       "avg_mttd_ms": 5843, "avg_mttr_ms": 14705},
     }
 
 
 _METRICS = {
     "metrics": [{"label": "MTTD", "value_text": "8s"}, {"label": "MTTR", "value_text": "41s"},
                 {"label": "성공률", "value_text": "82%"}, {"label": "에스컬레이션", "value_text": "2"}],
-    "detail": {"mttd_sec": 8, "mttr_sec": 41, "mttr_max_sec": 81, "integrity_issue_count": 0,
+    "detail": {"mttd_sec": 8.2, "mttr_sec": 41.3, "mttr_max_sec": 81, "integrity_issue_count": 0,
                "escalation_count": 2, "incident_count": 22},
 }
 
 _APPROVAL_7 = {
-    "incident_id": "INC-0007", "fault": "F-3", "summary": "원인 미확인 장애", "waiting_sec": 134,
+    "incident_id": "INC-0007", "fault": "UNKNOWN", "summary": "원인 미확인 장애", "waiting_sec": 134,
     "waiting_text": "2분째 대기",
     "description_text": "해석기 1차 · 대체 모두 응답이 없어 자동 복구를 멈췄어요. 지금은 규칙 해석으로 주문을 받고 있어요",
     "recommendation_text": "추천: 점검 후 1차 해석기 재개 · 근거 3건 (응답 없음 ×3) · 회로 시험까지 42초",

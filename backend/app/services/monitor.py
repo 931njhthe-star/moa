@@ -92,7 +92,11 @@ def _open_incident_count(fault_code: str, target: str) -> int:
 
 
 def open_incident(signal: dict) -> str:
-    """사건을 만들고 쓴 관측을 묶는다. 주입이 아니라 실제 장애이므로 `injected_at` 은 두지 않는다."""
+    """사건을 만들고 쓴 관측을 묶는다.
+
+    `injected_at` 은 **실습 주입이 있을 때만** 채운다(`link_lab_injection`). 저절로 난 장애에는
+    주입 시각이 없으므로 비워 두고, MTTD 평균에서 빠진다.
+    """
     incident_id = "INC-" + secrets.token_hex(6).upper()
     trace_id = signal.get("trace_id") or f"tr_{secrets.token_hex(6).upper()}"
     db.execute(
@@ -104,6 +108,7 @@ def open_incident(signal: dict) -> str:
     # 쓴 행에 사건을 묶어 둔다 — 안 하면 다음 순회에서 같은 관측을 또 세어 사건이 쏟아진다
     db.execute("UPDATE healing.runtime_metric SET incident_id = %s WHERE id = ANY(%s)",
                (incident_id, signal["metric_ids"]), role="healing")
+    link_lab_injection(incident_id, signal["target"])
     return incident_id
 
 
@@ -150,7 +155,33 @@ def open_incident_for(fault_code: str, target: str, *, label: str, detection_met
         "VALUES (%s,%s,%s,'detected',%s,%s,%s,false)",
         (incident_id, trace_id or f"tr_{secrets.token_hex(6).upper()}", fault_code, label,
          detection_metric, evidence), role="healing")
+    link_lab_injection(incident_id, target)
     return incident_id
+
+
+def link_lab_injection(incident_id: str, target: str, *, window_sec: int = 180) -> bool:
+    """실습 주입으로 생긴 사건이면 그 주입과 묶고 `injected_at` 을 채운다.
+
+    **MTTD 가 측정되는 유일한 경로다.** `v_metrics.mttd_sec` 은 `detected_at - 주입 시각`인데,
+    주입과 사건을 묶는 코드가 시험 워크플로에만 있었다. 그 사건들은 `is_verification_run = true`
+    라 뷰에서 빠지므로, 대시보드 B 의 "탐지까지" 칸이 **구조적으로 항상 비어 있었다**
+    (2026-11-07 실측 `mttd_sec: null` · 사건 11건). SC-2(15초 이하)를 재려면 이 연결이 있어야 한다.
+
+    저절로 난 실제 장애에는 주입 행이 없다 — 그쪽은 그대로 `injected_at` 없이 남고
+    MTTD 평균에서 빠진다. 지어낸 시각을 채우지 않는다.
+    """
+    row = db.fetch_one(
+        "SELECT injection_id, injected_at FROM healing.fault_injection "
+        " WHERE run_id IS NULL AND action = 'inject' AND incident_id IS NULL AND target = %s "
+        "   AND injected_at > NOW() - (%s * INTERVAL '1 second') "
+        " ORDER BY injected_at DESC LIMIT 1", (target, window_sec), role="healing")
+    if not row:
+        return False
+    db.execute("UPDATE healing.fault_injection SET incident_id = %s WHERE injection_id = %s",
+               (incident_id, row["injection_id"]), role="healing")
+    db.execute("UPDATE healing.incident SET injected_at = %s WHERE incident_id = %s",
+               (row["injected_at"], incident_id), role="healing")
+    return True
 
 
 def test_injection_active(target: str) -> bool:

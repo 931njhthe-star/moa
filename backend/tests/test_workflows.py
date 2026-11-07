@@ -76,7 +76,27 @@ def _grid(monkeypatch, rows):
         return [dict(r) for r in rows]
 
     monkeypatch.setattr(workflows.db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(workflows.db, "fetch_one", lambda *a, **k: {
+        "run_id": "run_abc123", "summary": {"pass": 3, "fail": 1, "needs_review": 1}})
     return workflows.trials_grid(), seen
+
+
+def test_trials_grid_names_the_latest_run(monkeypatch):
+    """격자 위에 적을 실행 ID와 예상 흐름 일치 — 진행 중 회차는 분모에서 뺀다."""
+    grid, _ = _grid(monkeypatch, GRID_ROWS)
+    assert grid["latest_run"]["run_id"] == "run_abc123"
+    assert (grid["latest_run"]["ok"], grid["latest_run"]["valid"]) == (3, 5)
+
+
+def test_trials_grid_keeps_the_grid_when_the_run_name_cannot_be_read(monkeypatch):
+    """실행 이름을 못 읽었다고 25회 격자를 통째로 비우지 않는다."""
+    def boom(*a, **k):
+        raise workflows.db.DbUnavailable("DATABASE_URL 미설정")
+
+    grid, _ = _grid(monkeypatch, GRID_ROWS)
+    monkeypatch.setattr(workflows.db, "fetch_one", boom)
+    again = workflows.trials_grid()
+    assert again["latest_run"] is None and again["rows"] == grid["rows"]
 
 
 def test_trials_grid_maps_each_status_to_its_dashboard_cell(monkeypatch):

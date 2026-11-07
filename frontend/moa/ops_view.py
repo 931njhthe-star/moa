@@ -182,8 +182,8 @@ def kpis(metrics: dict, trial_sum: dict | None) -> list[dict]:
                 "extra": extra, "target": copy.OB_TARGET[key], "verdict": verdict}
 
     return [
-        card("mttd", _int_text(mttd), "초", None, _verdict(mttd, mttd is not None and mttd <= MTTD_TARGET_SEC)),
-        card("mttr", _int_text(mttr), "초", f"최대 {round(mttr_max)}초" if mttr_max is not None else None,
+        card("mttd", _sec_text(mttd), "초", None, _verdict(mttd, mttd is not None and mttd <= MTTD_TARGET_SEC)),
+        card("mttr", _sec_text(mttr), "초", f"최대 {round(mttr_max)}초" if mttr_max is not None else None,
              _verdict(mttr, mttr is not None and mttr <= MTTR_TARGET_SEC)),
         card("auto", f"{ok}/{valid}" if valid else None, None, f"({pct}%)" if pct is not None else None,
              _verdict(pct, pct is not None and pct >= AUTO_RATE_TARGET)),
@@ -194,6 +194,14 @@ def kpis(metrics: dict, trial_sum: dict | None) -> list[dict]:
 
 def _int_text(value) -> str | None:
     return None if value is None else f"{round(value):,}"
+
+
+def _sec_text(value) -> str | None:
+    """측정 원본은 ms다. 목표(15초 · 60초)와 바로 견주도록 **소수 1자리 초**로 쓴다.
+
+    `8` 로 반올림해 버리면 8.4 와 8.0 이 같아 보이고, 8.2 가 ms 기록과 맞는지 확인할 수 없다.
+    """
+    return None if value is None else f"{float(value):.1f}"
 
 
 # --- C 지금 요청 경로 -----------------------------------------------------------
@@ -242,10 +250,13 @@ def route(status: dict) -> dict:
 
 def _replica_row(r: dict) -> dict:
     name = r.get("name") or r.get("key")
+    # SC-12 — 전환에 걸린 초. 서버가 주지 않으면 칸을 비운다(지어내지 않는다)
+    switch = r.get("switch_sec")
+    note = copy.OC_SWITCH.format(sec=int(switch)) if switch is not None else None
     if r.get("state") == "up":
         return {"name": name, "tone": "active" if r.get("active", True) else "standby",
-                "text": copy.OC_ACTIVE if r.get("active", True) else copy.OC_STANDBY}
-    return {"name": name, "tone": "blocked", "text": r.get("state_text") or "중단"}
+                "text": copy.OC_ACTIVE if r.get("active", True) else copy.OC_STANDBY, "note": note}
+    return {"name": name, "tone": "blocked", "text": r.get("state_text") or "중단", "note": note}
 
 
 def _interpreter_row(svc: dict, name: str, is_active: bool, need: int) -> dict:
@@ -288,7 +299,9 @@ def trial_summary(trials: dict | None) -> dict | None:
     total = trials.get("total_runs") or 5 * len(rows)
     return {"rows": rows, "f4": f4, "ok": ok_all, "valid": valid_all, "done": done, "total": total,
             "pct": round(ok_all / valid_all * 100) if valid_all else None,
-            "max_sec": max(secs) if secs else None}
+            "max_sec": max(secs) if secs else None,
+            # 어느 실행의 숫자인지 — 없으면 25회 측정을 캡처로 증빙할 수 없다
+            "run": trials.get("latest_run")}
 
 
 def _trial_cell(cell: dict, fault: str) -> str:
@@ -304,26 +317,50 @@ def _trial_cell(cell: dict, fault: str) -> str:
     return f'<span class="moa-tc moa-tc-{c.esc(result)}">{c.esc(text)}</span>'
 
 
+def _trial_name(fault: str, note: str | None = None) -> str:
+    """행 이름 = 장애 이름 + F 코드 + (작게) 평가 유형 · 감지 메트릭."""
+    metric = copy.FAULT_METRIC.get(fault)
+    small = " · ".join(x for x in (note, metric) if x)
+    tail = f"<small>{c.esc(small)}</small>" if small else ""
+    return (f'<span class="moa-tname"><b>{c.esc(copy.FAULT_NAMES.get(fault, fault))}</b>'
+            f'<i>{c.esc(fault)}</i>{tail}</span>')
+
+
+def _trial_strategy(fault: str) -> str:
+    return f'<span class="moa-tstrat">{c.esc(copy.FAULT_STRATEGY.get(fault, ""))}</span>'
+
+
 def trials_html(trial_sum: dict | None) -> str:
-    head = (f'<div class="moa-ops-title"><b>{c.esc(copy.OD_TITLE)}</b>'
+    head = (f'<div class="moa-ops-title"><u class="moa-bbadge">D</u>'
+            f'<b>{c.esc(copy.OD_TITLE)}</b>'
             f'<span>{c.esc(copy.OD_HINT)}</span>')
     if not trial_sum:
         return head + f'</div><div class="moa-ops-empty">{c.esc(copy.OD_EMPTY)}</div>'
-    head += (f'<em>{c.esc(copy.OD_RUNS.format(done=trial_sum["done"], total=trial_sum["total"]))}</em></div>')
+    run = trial_sum.get("run") or {}
+    if run.get("run_id"):
+        # 실행 ID · 격자 진행 칸 · 예상 흐름 일치(= 예상대로 통과한 회차 / 판정이 난 회차)
+        valid = int(run.get("valid") or 0)
+        template = copy.OD_RUN_LINE if valid else copy.OD_RUN_LINE_SHORT
+        label = template.format(run_id=run["run_id"], done=trial_sum["done"],
+                                total=trial_sum["total"], ok=int(run.get("ok") or 0), valid=valid)
+    else:
+        label = copy.OD_RUNS.format(done=trial_sum["done"], total=trial_sum["total"])
+    head += f'<em>{c.esc(label)}</em></div>'
     cols = max([len(r.get("cells") or []) for r in trial_sum["rows"]] + [5])
     th = "".join(f"<span>{i}회</span>" for i in range(1, cols + 1))
-    lines = [f'<div class="moa-trow moa-trow-head"><span></span>{th}<span>{c.esc(copy.OD_SUCCESS)}</span></div>']
+    lines = [f'<div class="moa-trow moa-trow-head"><span></span>'
+             f'<span class="moa-tstrat">{c.esc(copy.OD_STRATEGY)}</span>{th}'
+             f'<span>{c.esc(copy.OD_SUCCESS)}</span></div>']
     for row in trial_sum["rows"]:
         fault = row.get("fault", "")
         cells = "".join(_trial_cell(x, fault) for x in row.get("cells") or [])
-        lines.append(f'<div class="moa-trow"><span class="moa-tname"><b>{c.esc(copy.FAULT_NAMES.get(fault, fault))}'
-                     f'</b><i>{c.esc(fault)}</i></span>{cells}'
+        lines.append(f'<div class="moa-trow">{_trial_name(fault)}{_trial_strategy(fault)}{cells}'
                      f'<span class="moa-tok">{row["ok"]}/{row["valid"]}</span></div>')
     f4 = trial_sum.get("f4")
     if f4:
         cells = "".join(_trial_cell(x, "F-4") for x in f4.get("cells") or [])
-        lines.append(f'<div class="moa-trow moa-trow-f4"><span class="moa-tname"><b>{c.esc(copy.FAULT_NAMES["F-4"])}'
-                     f'</b><i>F-4</i><small>{c.esc(copy.OD_F4_NOTE)}</small></span>{cells}'
+        lines.append(f'<div class="moa-trow moa-trow-f4">{_trial_name("F-4", copy.OD_F4_NOTE)}'
+                     f'{_trial_strategy("F-4")}{cells}'
                      f'<span class="moa-tok">{f4["ok"]}/{f4["valid"]}</span></div>')
     legend = "".join(f'<span><i class="moa-lg moa-lg-{k}"></i>{c.esc(t)}</span>' for k, t in copy.OD_LEGEND)
     total = (copy.OD_TOTAL.format(ok=trial_sum["ok"], valid=trial_sum["valid"], pct=trial_sum["pct"])
@@ -513,7 +550,10 @@ def incident_detail_html(detail: dict) -> str:
 # --- A · B · C HTML --------------------------------------------------------------
 def banner_head_html(b: dict) -> str:
     sub = f'<span class="moa-ban-sub">— {c.esc(b["sub"])}</span>' if b.get("sub") else ""
-    return (f'<div class="moa-ban-head"><i class="moa-ban-dot"></i>'
+    # 블록 배지 — 시안 2026-11-07 판부터 A ~ F · T1 · T2 · T2-R 이 모든 블록 머리에 붙는다.
+    # "결과가 가는 곳" 칩이 이 글자를 가리키므로, 칩과 블록이 같은 이름이어야 읽힌다
+    return (f'<div class="moa-ban-head"><u class="moa-bbadge moa-bbadge-a">A</u>'
+            f'<i class="moa-ban-dot"></i>'
             f'<b class="moa-ban-title">{c.esc(b["title"])}</b>{sub}</div>')
 
 
@@ -544,7 +584,8 @@ def kpis_html(cards: list[dict]) -> str:
             unit = f'<small>{c.esc(k["unit"])}</small>' if k["unit"] else ""
             extra = f'<em>{c.esc(k["extra"])}</em>' if k["extra"] else ""
             value = f'<b>{c.esc(k["value"])}</b>{unit}{extra}'
-        out.append(f'<div class="moa-kpi"><div class="moa-kpi-label"><b>{c.esc(k["label"])}</b>'
+        out.append(f'<div class="moa-kpi"><div class="moa-kpi-label">'
+                   f'<u class="moa-bbadge">B</u><b>{c.esc(k["label"])}</b>'
                    f'<span>{c.esc(k["abbr"])}</span></div><div class="moa-kpi-value">{value}</div>'
                    f'<div class="moa-kpi-foot"><span>{c.esc(k["target"])}</span>'
                    f'<span class="moa-verdict moa-verdict-{verdict}">{check}{c.esc(mark)}</span></div></div>')
@@ -560,12 +601,15 @@ def route_html(r: dict) -> str:
             if row["tone"] == "probing" and row.get("need"):
                 dots = '<span class="moa-rdots">' + "".join(
                     f'<i class="{"on" if i < row["streak"] else ""}"></i>' for i in range(row["need"])) + "</span>"
+            # SC-12 전환 초처럼 이름 옆에 덧붙는 작은 글자. 없으면 칸을 비운다
+            sub = f'<em>{c.esc(row["note"])}</em>' if row.get("note") else ""
             items.append(f'<div class="moa-rrow moa-rrow-{row["tone"]}"><i class="moa-rdot"></i>'
-                         f'<b>{c.esc(row["name"])}</b>{dots}<span>{c.esc(row["text"])}</span></div>')
+                         f'<b>{c.esc(row["name"])}</b>{sub}{dots}<span>{c.esc(row["text"])}</span></div>')
         groups.append(f'<div class="moa-rgroup"><span class="moa-rlabel">{c.esc(label)}</span>'
                       f'<div>{"".join(items)}</div></div>')
     note = ""
     if r.get("note"):
         note = f'<div class="moa-rnote">{c.esc(r["note"][1])}</div>'
-    return (f'<div class="moa-ops-title"><b>{c.esc(copy.OC_TITLE)}</b></div>'
+    return (f'<div class="moa-ops-title"><u class="moa-bbadge">C</u>'
+            f'<b>{c.esc(copy.OC_TITLE)}</b></div>'
             f'<div class="moa-route">{"".join(groups)}</div>{note}')

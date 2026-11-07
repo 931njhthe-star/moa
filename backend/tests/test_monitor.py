@@ -26,6 +26,9 @@ def fake_db(monkeypatch):
     monkeypatch.setattr(monitor.db, "fetch_all", fetch_all)
     def fetch_one(sql, params=None, **k):
         state["sqls"].append(sql)
+        if "fault_injection" in sql:
+            # 실습 주입 조회 — 이 테스트들은 저절로 난 장애를 다룬다(주입 행 없음)
+            return state.get("injection")
         return {"n": 1} if params and params[0] in state["open"] else {"n": 0}
 
     monkeypatch.setattr(monitor.db, "fetch_one", fetch_one)

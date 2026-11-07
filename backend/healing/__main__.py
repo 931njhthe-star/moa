@@ -758,6 +758,46 @@ def _health_watch() -> None:
             _recover_worker(target)
 
 
+def _lab_kill_watch() -> None:
+    """도구줄(실습) 장애 주입 중 **프로세스 중단(F-3)** 을 실제로 수행한다.
+
+    해석기(F-1 · F-2 · F-5)와 메뉴 저장소(F-6)는 대상 서비스가 `fault_injection` 을 직접 읽어
+    스스로 모드를 바꾸지만, 프로세스 중단은 **실행하는 주체가 없으면 행만 남는다**
+    (2026-11-07 확인 — 버튼은 눌리고 토스트도 떴지만 컨테이너는 살아 있었다).
+    업무 backend 에는 Docker 권한이 없으므로(socket-proxy 는 healing 전용) 여기서 집행한다.
+
+    시험 회차(`run_id` 있음)는 `_run` 이 맡는다 — 여기서는 run_id 가 없는 행만 본다.
+    멈춘 뒤 주입을 바로 닫는다. **중단은 한 번 일어나는 사건**이지 유지되는 모드가 아니고,
+    되살리는 일은 상시 감시(`_health_watch`)가 평소 경로로 해야 측정이 성립한다.
+    """
+    if config.ENVIRONMENT != "lab":
+        return
+    rows = db.fetch_all(
+        "SELECT injection_id,target FROM healing.fault_injection "
+        " WHERE run_id IS NULL AND action='inject' AND mode='kill' AND cleared_at IS NULL "
+        " ORDER BY injected_at", role="healing")
+    for row in rows:
+        target, injection_id = row["target"], row["injection_id"]
+        other = "moa-b-backend-1" if target == "moa-a-backend-1" else "moa-a-backend-1"
+        if monitor.test_injection_active(target):
+            continue          # 시험이 같은 대상을 쥐고 있다. 다음 순회에 다시 본다
+        if not _ready(other):
+            # 양쪽을 동시에 내리지 않는다 — 서비스가 통째로 멈추면 복구를 관측할 수 없다
+            detail = f"{other} 가 정상이 아니어서 {target} 중지를 건너뛴다"
+            ok = False
+        else:
+            ok, detail = _docker_action(target, "stop")
+        db.execute("UPDATE healing.fault_injection SET cleared_at=NOW() WHERE injection_id=%s",
+                   (injection_id,), role="healing")
+        # 성공은 따로 적지 않는다 — 이어서 상시 감시가 `incident_detected` 를 남긴다.
+        # 실패만 남긴다(로그 event 는 D-03 1.5 고정 목록에서만 쓴다 — 새 이름을 늘리지 않는다)
+        if not ok:
+            logging_setup.log("escalated", level="warning", fault_code="WORKER_DOWN",
+                              target=target, detail=detail)
+        else:
+            LOG.info("lab kill applied: %s (%s)", target, detail)
+
+
 def _recover_worker(target: str) -> None:
     incident_id = monitor.open_incident_for(
         "WORKER_DOWN", target, label=INCIDENT_LABELS["WORKER_DOWN"],
@@ -839,6 +879,7 @@ def main() -> None:
             _db_watch()                   # 맨 먼저 — DB 가 죽으면 아래 단계가 전부 깨진다
             _safe(_heartbeat)
             _safe(_monitor)               # 상시 감시는 시험 워크플로와 **나란히** 돈다
+            _safe(_lab_kill_watch)        # 도구줄 F-3 집행 — 탐지보다 먼저 둔다
             _safe(_health_watch)          # F-3 은 메트릭이 아니라 헬스체크로 직접 관측한다
             run = _claim() if config.ENVIRONMENT == "lab" else None
             if run:

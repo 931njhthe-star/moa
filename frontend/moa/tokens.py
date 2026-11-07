@@ -771,6 +771,268 @@ header[data-testid="stHeader"] { display: none; }
 .st-key-dlg_share_btns .stButton button, .st-key-dlg_share_btns .stDownloadButton button { width: 100%; min-height: 52px; border-radius: 12px; font-size: 15px; }
 .moa-dlg-caption { text-align: center; font: 400 12px/18px var(--moa-font); color: var(--moa-muted-3); }
 
+/* ===== 구역 3 장애 시험 — 정본 시안 `Moa_운영대시보드.svg` T1 · T2 · T2-R =========
+   시안 좌표: 구역 패널 x65 w1070 / T1 카드 x78 w491.4 / T2 카드 x581.4 w540.6 / 간격 12
+   비율로 옮긴다 — 폭이 좁아져도 두 카드의 역할 구분이 먼저 읽혀야 한다 */
+.st-key-moa_zone3 {
+  margin-top: 16px; padding: 12px 13px 13px; gap: 12px;
+  background: var(--moa-line-faint); border: 1px solid var(--moa-slash); border-radius: 16px;
+}
+.moa-zhead { display: flex; align-items: center; gap: 9px; margin: 2px 0 1px; }
+.moa-zhead i {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 19px; height: 19px; border-radius: 6px; background: var(--moa-ink);
+  font: 700 12px/1 var(--moa-font); font-style: normal; color: #FFFFFF;
+}
+.moa-zhead b { font: 700 15px/22px var(--moa-font); color: var(--moa-ink); }
+.moa-zhead span { font: 400 12.5px/18px var(--moa-font); color: var(--moa-muted-2); }
+.moa-zhead em {
+  margin-left: 4px; padding: 2px 9px; border-radius: 10px; font-style: normal;
+  background: var(--moa-amber-bg); border: 1px solid var(--moa-amber-line);
+  font: 700 11.5px/16px var(--moa-font); color: var(--moa-amber-text);
+}
+.st-key-moa_zone3_row { flex-wrap: nowrap; gap: 12px; align-items: stretch; }
+.st-key-moa_zone3_row > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t1_card) { flex: 0 0 47%; min-width: 0; }
+.st-key-moa_zone3_row > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t2_card) { flex: 1 1 auto; min-width: 0; }
+.st-key-moa_t1_card, .st-key-moa_t2_card, .st-key-moa_t2r_card {
+  background: var(--moa-surface); border: 1px solid var(--moa-line); border-radius: 14px;
+  padding: 16px 19px 14px; gap: 0; height: 100%;
+}
+
+/* 블록 배지 A ~ F — 제목 왼쪽의 작은 글자. 칩과 블록을 같은 이름으로 잇는다 */
+.moa-bbadge {
+  flex: none; text-decoration: none; font: 700 11px/16px var(--moa-font);
+  color: var(--moa-faint); letter-spacing: 0.02em;
+}
+.moa-bbadge-a { color: var(--moa-amber-strong); }
+.moa-kpi-label .moa-bbadge { margin-right: 1px; }
+
+/* 블록 머리 — 배지 + 제목 + 보조 질문 칩 (A ~ F · T1 · T2 · T2-R 공통) */
+.moa-bhead { display: flex; align-items: center; gap: 9px; }
+.moa-bhead i { font: 700 11px/16px var(--moa-font); font-style: normal; color: var(--moa-faint); }
+.moa-bhead b { font: 700 15px/22px var(--moa-font); color: var(--moa-ink); letter-spacing: -0.2px; }
+.moa-bhead em {
+  padding: 2px 10px; border-radius: 10px; background: var(--moa-chip); font-style: normal;
+  font: 600 12px/16px var(--moa-font); color: var(--moa-ink-4); white-space: nowrap;
+}
+.moa-bnote { margin: 9px 0 2px; font: 400 12.5px/18px var(--moa-font); color: var(--moa-muted); }
+.moa-bhead u {
+  text-decoration: none; font: 400 12px/16px var(--moa-font); color: var(--moa-muted-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+
+/* T1 타일 2행 x 3열 — 시안 147.1 x 52, 간격 6 */
+[class*="st-key-moa_ftiles_"] { flex-wrap: nowrap; gap: 6px; margin-top: 7px; }
+[class*="st-key-moa_ftiles_"] > [data-testid="stLayoutWrapper"],
+[class*="st-key-moa_ftiles_"] > div { flex: 1 1 0; min-width: 0; }
+[class*="st-key-moa_ftiles_"] .stButton, [class*="st-key-moa_ftiles_"] .stButton button { width: 100%; }
+[class*="st-key-moa_ftiles_"] .stButton button {
+  height: 52px; min-height: 52px; padding: 0 12px; border-radius: 10px;
+  background: var(--moa-surface); border: 1px solid var(--moa-line-2); text-align: left;
+}
+[class*="st-key-moa_ftiles_"] .stButton button p { text-align: left; }
+[class*="st-key-moa_ftiles_"] .stButton button div[data-testid="stMarkdownContainer"] { width: 100%; }
+[class*="st-key-moa_ftiles_"] .stButton button p:first-child {
+  font: 700 12.5px/18px var(--moa-font) !important; color: var(--moa-ink);
+}
+[class*="st-key-moa_ftiles_"] .stButton button:hover { border-color: var(--moa-line-3); background: var(--moa-sunken); }
+[class*="st-key-moa_ftiles_"] [class*="_on"] button {
+  background: var(--moa-ink) !important; border-color: var(--moa-ink) !important;
+}
+[class*="st-key-moa_ftiles_"] [class*="_on"] button p { color: #FFFFFF !important; }
+
+/* T1 상태 줄 — 안내 · 확인 · 유지 중 세 모습 */
+.moa-fstrip {
+  display: flex; align-items: center; gap: 9px; min-height: 40px; margin-top: 9px;
+  padding: 7px 13px; border-radius: 10px; background: var(--moa-sunken);
+  font: 400 12.5px/18px var(--moa-font); color: var(--moa-ink-4);
+}
+.moa-fstrip i {
+  flex: none; padding: 2px 7px; border-radius: 5px; background: var(--moa-surface);
+  border: 1px solid var(--moa-line-2); font: 700 10.5px/15px var(--moa-font);
+  font-style: normal; color: var(--moa-muted);
+}
+.moa-fstrip span { min-width: 0; }
+/* 결과가 가는 곳은 카드 바닥에 붙인다 — 시안에서 두 카드의 칩 줄이 같은 높이에 있다 */
+.st-key-moa_t1_card, .st-key-moa_t2_card { display: flex; flex-direction: column; }
+.st-key-moa_t1_card > [data-testid="stElementContainer"]:last-child,
+.st-key-moa_t2_card > [data-testid="stElementContainer"]:last-child { margin-top: auto; }
+.moa-fstrip-lock { background: var(--moa-chip); color: var(--moa-muted); }
+.moa-fstrip-ask { flex: 1 1 auto; background: var(--moa-amber-card); border: 1px solid var(--moa-amber-line); }
+.moa-fstrip-live { flex: 1 1 auto; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 13px; }
+.moa-fstrip-live b { font: 700 12.5px/18px var(--moa-font); color: var(--moa-ink); }
+.moa-fstrip-live span { font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted); }
+.moa-fsec { flex: none; font: 700 19px/24px var(--moa-font); color: var(--moa-ink); }
+.moa-fsec i { font: 400 12px/18px var(--moa-font); font-style: normal; color: var(--moa-muted-2); margin-left: 2px; }
+.st-key-moa_fstrip_ask, .st-key-moa_fstrip_live { flex-wrap: nowrap; gap: 9px; margin-top: 9px; align-items: center; }
+.st-key-moa_fstrip_ask .moa-fstrip, .st-key-moa_fstrip_live .moa-fstrip { margin-top: 0; }
+/* 글 · 경과 초는 한 flex 상자 안에 둔다 — Streamlit 이 감싸는 상자에 기대지 않는다 */
+.moa-flive { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; }
+.moa-flive .moa-fstrip-live { flex: 1 1 auto; min-width: 0; }
+.st-key-moa_fstrip_live > [data-testid="stElementContainer"]:first-child { flex: 1 1 auto; min-width: 0; }
+.st-key-moa_fstrip_live [class*="st-key-fault_clear"] { flex: none; }
+.st-key-moa_fstrip_ask .stButton button, .st-key-moa_fstrip_live .stButton button {
+  min-height: 34px; height: 34px; border-radius: 9px; white-space: nowrap;
+  font: 600 12.5px/18px var(--moa-font);
+}
+
+/* 결과가 가는 곳 칩 — 블록 글자를 초록 알약에 넣는다 */
+.moa-zwhere {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--moa-chip);
+}
+.moa-zwhere em { font: 400 12px/16px var(--moa-font); font-style: normal; color: var(--moa-muted-2); }
+.moa-zwhere span {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px 0 4px;
+  border-radius: 11px; background: var(--moa-sunken); border: 1px solid var(--moa-line-soft);
+  font: 600 12px/16px var(--moa-font); color: var(--moa-ink-3); white-space: nowrap;
+}
+.moa-zwhere span i {
+  display: inline-flex; align-items: center; justify-content: center; height: 14px; padding: 0 5px;
+  border-radius: 7px; background: var(--moa-green); font: 700 10.5px/1 var(--moa-font);
+  font-style: normal; color: #FFFFFF;
+}
+
+/* T2 범위 타일 2종 — 시안 247.3 x 56, 선택은 초록 테두리 + 연초록 바탕 */
+.st-key-moa_t2_modes { flex-wrap: nowrap; gap: 8px; margin-top: 7px; }
+.st-key-moa_t2_modes > [data-testid="stLayoutWrapper"], .st-key-moa_t2_modes > div { flex: 1 1 0; min-width: 0; }
+.st-key-moa_t2_modes .stButton, .st-key-moa_t2_modes .stButton button { width: 100%; }
+.st-key-moa_t2_modes .stButton button {
+  height: 56px; min-height: 56px; padding: 0 14px; border-radius: 12px; text-align: left;
+  background: var(--moa-surface); border: 1px solid var(--moa-line-2);
+}
+.st-key-moa_t2_modes .stButton button p { text-align: left; }
+.st-key-moa_t2_modes .stButton button p:first-child { font: 600 13.5px/19px var(--moa-font) !important; color: var(--moa-ink); }
+.st-key-moa_t2_modes .stButton button p:last-child { font: 400 11.5px/16px var(--moa-font) !important; color: var(--moa-muted-2); }
+.st-key-moa_t2_modes [class*="_on"] button {
+  background: #F3F8F5 !important; border-color: var(--moa-green) !important;
+}
+.st-key-moa_t2_modes [class*="_on"] button p:first-child { color: var(--moa-green-tint-ink) !important; font-weight: 700 !important; }
+.st-key-moa_t2_modes [class*="_on"] button p:last-child { color: var(--moa-green-tint-label) !important; }
+
+/* T2 입력 줄 — 라벨 · 선택 · 세그먼트 · 스테퍼 · 슬라이더 */
+.moa-flabel { margin: 12px 0 6px; font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
+.st-key-moa_t2_pickrow, .st-key-moa_t2_numrow { flex-wrap: nowrap; gap: 11px; align-items: flex-start; }
+.st-key-moa_t2_pickrow > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t2_fault),
+.st-key-moa_t2_numrow > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t2_rep) { flex: 1 1 58%; min-width: 0; }
+.st-key-moa_t2_pickrow > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t2_target),
+.st-key-moa_t2_numrow > [data-testid="stLayoutWrapper"]:has(> .st-key-moa_t2_sec) { flex: 1 1 42%; min-width: 0; }
+.st-key-moa_t2_fault [data-baseweb="select"] > div,
+.st-key-moa_t2_rep [data-testid="stNumberInputContainer"] {
+  min-height: 37px; border-radius: 10px !important; background: var(--moa-surface) !important;
+  border-color: var(--moa-line-2) !important;
+}
+.st-key-moa_t2_fault [data-baseweb="select"] div[value] { font: 400 13px/19px var(--moa-font); color: var(--moa-ink); }
+.st-key-moa_t2_rep [data-testid="stNumberInputContainer"] input { text-align: center; font: 700 14px/20px var(--moa-font); }
+.moa-t2one, .moa-t2fixnum {
+  display: flex; align-items: center; min-height: 37px; padding: 0 13px; border-radius: 10px;
+  background: var(--moa-sunken); border: 1px solid var(--moa-line-soft);
+  font: 400 13px/19px var(--moa-font); color: var(--moa-ink-4);
+}
+.st-key-moa_t2_seg {
+  flex-wrap: nowrap; gap: 3px; padding: 3px; border-radius: 10px;
+  background: var(--moa-surface); border: 1px solid var(--moa-line-2);
+}
+.st-key-moa_t2_seg > [data-testid="stLayoutWrapper"], .st-key-moa_t2_seg > div { flex: 1 1 0; min-width: 0; }
+.st-key-moa_t2_seg .stButton, .st-key-moa_t2_seg .stButton button { width: 100%; }
+.st-key-moa_t2_seg .stButton button {
+  height: 30px; min-height: 30px; border-radius: 7px; border: none; background: transparent;
+  font: 400 12.5px/18px var(--moa-font); color: var(--moa-ink-4);
+}
+.st-key-moa_t2_seg [class*="_on"] button {
+  background: var(--moa-ink) !important; color: #FFFFFF !important; font-weight: 600 !important;
+}
+.st-key-moa_t2_seg [class*="_on"] button p { color: #FFFFFF !important; }
+.moa-t2guide {
+  display: flex; align-items: center; gap: 9px; min-height: 36px; margin-top: 10px; padding: 0 13px;
+  border-radius: 10px; background: var(--moa-sunken);
+  font: 400 12px/17px var(--moa-font); color: var(--moa-muted);
+}
+.moa-t2guide i {
+  flex: none; padding: 2px 7px; border-radius: 5px; background: var(--moa-surface);
+  border: 1px solid var(--moa-line-2); font: 700 10.5px/15px var(--moa-font);
+  font-style: normal; color: var(--moa-muted);
+}
+.moa-t2fixed {
+  margin-top: 10px; padding: 9px 13px; border-radius: 10px; background: var(--moa-green-pill);
+  border: 1px solid var(--moa-green-pill-line);
+  font: 400 12px/17px var(--moa-font); color: var(--moa-green-text);
+}
+.st-key-moa_t2_sec [data-testid="stSlider"] { padding: 4px 6px 0; }
+.st-key-moa_t2_btns { justify-content: flex-end; flex-wrap: nowrap; gap: 8px; margin-top: 14px; }
+.st-key-moa_t2_btns .stButton button {
+  min-height: 38px; height: 38px; padding: 0 16px; border-radius: 10px;
+  font: 600 13.5px/20px var(--moa-font);
+}
+.st-key-moa_t2_btns .stButton button[kind="primary"] { font-weight: 700; }
+
+/* 알림 · 점검 결과 — 시안에는 파랑 · 빨강 상자가 없다. 옅은 바탕 + 글자 색으로 말한다 */
+.moa-note {
+  margin: 10px 0 2px; padding: 10px 13px; border-radius: 10px;
+  font: 500 12.5px/18px var(--moa-font);
+  background: var(--moa-sunken); border: 1px solid var(--moa-line-soft); color: var(--moa-ink-4);
+}
+.moa-note-green { background: var(--moa-green-soft); border-color: var(--moa-green-pill-line); color: var(--moa-green-text); }
+.moa-note-red { background: var(--moa-red-soft); border-color: #F3D0CC; color: var(--moa-red-text); }
+.moa-note-amber { background: var(--moa-amber-bg); border-color: var(--moa-amber-line); color: var(--moa-amber-text); }
+.moa-subnote { margin: 6px 0 2px; font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-3); }
+
+/* 환경 점검 목록 — 한 줄에 판정 알약 · 항목 · 설명 */
+.moa-pflist { margin-top: 10px; border: 1px solid var(--moa-line); border-radius: 12px; overflow: hidden; }
+.moa-pfrow {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  padding: 9px 13px; border-bottom: 1px solid var(--moa-line-faint); background: var(--moa-surface);
+}
+.moa-pfrow:last-child { border-bottom: none; }
+.moa-pfrow b { font: 600 12.5px/18px var(--moa-font); color: var(--moa-ink); }
+.moa-pfrow span:not(.moa-verdict) {
+  min-width: 0; font: 400 12px/17px var(--moa-font); color: var(--moa-muted);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.moa-pfrow u {
+  flex-basis: 100%; text-decoration: none; margin-left: 68px;
+  font: 400 11.5px/16px var(--moa-mono); color: var(--moa-muted-3);
+  overflow-wrap: anywhere;
+}
+.moa-pfrow:has(.moa-verdict-fail) { background: var(--moa-red-soft); }
+
+/* 펼침 상자 · 코드 상자도 같은 선 · 같은 모서리로 */
+.st-key-moa_zone3 [data-testid="stExpander"] details {
+  border: 1px solid var(--moa-line) !important; border-radius: 12px !important;
+  background: var(--moa-surface) !important;
+}
+.st-key-moa_zone3 [data-testid="stExpander"] summary { font: 600 12.5px/18px var(--moa-font); }
+.st-key-moa_zone3 [data-testid="stCode"] { border-radius: 10px; }
+
+/* T2-R 시험 기록 — 주문 처리 기록(F)과 같은 접힘 구조 */
+.st-key-moa_t2r_card { padding: 0; gap: 0; justify-content: center; }
+.st-key-card_rec_toggle:hover .moa-ord-toggle { background: var(--moa-sunken); border-radius: 14px; }
+.st-key-moa_t2r_card .moa-ord-toggle span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.st-key-moa_t2r_body {
+  background: var(--moa-surface); border: 1px solid var(--moa-line); border-radius: 14px;
+  padding: 4px 19px 14px; gap: 0; margin-top: -2px;
+}
+/* 시험 기록 상세 — T1 · T2 카드와 같은 글씨 층 (라벨 11.5 · 값 12.5 · 수치 19) */
+.moa-recline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin: 10px 0 8px; }
+.moa-recline span { font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
+.moa-recline b { font: 600 12.5px/18px var(--moa-font); color: var(--moa-ink); margin-right: 2px; }
+.moa-recstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0 10px; }
+.moa-recstats > div {
+  padding: 9px 13px; border-radius: 10px; background: var(--moa-sunken);
+  border: 1px solid var(--moa-line-soft);
+}
+.moa-recstats span { display: block; font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
+.moa-recstats b { display: block; margin-top: 2px; font: 700 19px/26px var(--moa-font); color: var(--moa-ink); }
+.moa-recfoot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 12px; }
+.moa-recfoot span { font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
+.moa-recfoot b { font: 600 12px/17px var(--moa-font); color: var(--moa-ink-4); }
+.moa-reclabel { margin: 14px 0 8px; font: 700 12.5px/18px var(--moa-font); color: var(--moa-ink); }
+.st-key-moa_t2r_body [data-testid="stProgress"] { margin-bottom: 4px; }
+.st-key-moa_t2r_body [data-testid="stProgress"] > div { height: 6px; }
+.st-key-moa_t2r_body [data-testid="stSelectbox"] label { font: 400 11.5px/16px var(--moa-font); color: var(--moa-muted-2); }
+
 /* ===== SCR-006 운영 대시보드 — 정본 시안 `Moa_운영대시보드.svg` 24 · 25-1 ~ 25-3 · 26 ===== */
 .st-key-moa_ops { gap: 12px; margin-top: 0 !important; }
 .moa-ops-title { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--moa-line-soft); }
@@ -844,6 +1106,7 @@ header[data-testid="stHeader"] { display: none; }
 .moa-rrow { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; border-radius: 10px; background: var(--moa-sunken); }
 .moa-rdot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--moa-faint); box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8); }
 .moa-rrow b { font: 700 13.5px/20px var(--moa-font); color: var(--moa-ink); }
+.moa-rrow em { font: 400 11.5px/16px var(--moa-font); font-style: normal; color: var(--moa-muted-3); white-space: nowrap; }
 .moa-rrow > span { margin-left: auto; font: 600 12.5px/18px var(--moa-font); color: var(--moa-muted-2); white-space: nowrap; }
 .moa-rrow-active { background: var(--moa-green-soft); }
 .moa-rrow-active .moa-rdot { background: var(--moa-green); }
@@ -862,7 +1125,7 @@ header[data-testid="stHeader"] { display: none; }
 
 /* D 장애 시험 결과 — 칸 색 = 결과, 칸 숫자 = 복구 초, 굵은 숫자 = 목표 초과 */
 .moa-trials { display: flex; flex-direction: column; }
-.moa-trow { display: grid; grid-template-columns: minmax(0, 1fr) repeat(var(--cols, 5), 48px) 52px; column-gap: 6px; align-items: center; min-height: 44px; }
+.moa-trow { display: grid; grid-template-columns: minmax(0, 1fr) 112px repeat(var(--cols, 5), 48px) 52px; column-gap: 6px; align-items: center; min-height: 48px; }
 .moa-trow-head { min-height: 22px; font: 400 11px/16px var(--moa-font); color: var(--moa-muted-3); text-align: center; }
 .moa-trow-head > span:last-child { text-align: right; }
 .moa-trow-f4 { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--moa-line-2); min-height: 52px; }
@@ -870,6 +1133,8 @@ header[data-testid="stHeader"] { display: none; }
 .moa-tname b { font: 700 13px/18px var(--moa-font); color: var(--moa-ink); }
 .moa-tname i { font: 400 11px/16px var(--moa-font); font-style: normal; color: var(--moa-muted-3); }
 .moa-tname small { flex-basis: 100%; font: 400 11px/14px var(--moa-font); color: var(--moa-muted-2); }
+.moa-tstrat { font: 500 11.5px/16px var(--moa-font); color: var(--moa-muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.moa-trow-head .moa-tstrat { text-align: left; font-weight: 400; color: var(--moa-muted-3); }
 .moa-tok { text-align: right; font: 700 13.5px/20px var(--moa-font); color: var(--moa-ink); font-variant-numeric: tabular-nums; }
 .moa-tc { display: grid; place-items: center; height: 34px; border-radius: 7px; font: 600 12.5px/16px var(--moa-font); font-variant-numeric: tabular-nums; border: 1px solid transparent; }
 .moa-tc-auto { background: var(--moa-green); color: #FFFFFF; }
@@ -967,6 +1232,7 @@ header[data-testid="stHeader"] { display: none; }
 .st-key-moa_fault [class*="st-key-fault_"][class*="_on"] button { background: var(--moa-ink) !important; border-color: var(--moa-ink) !important; color: #FFFFFF !important; }
 .st-key-fault_clear button { background: var(--moa-chip) !important; border-color: var(--moa-chip) !important; font-weight: 700 !important; }
 .moa-fault-title { font: 600 12.5px/18px var(--moa-font); color: var(--moa-ink-4); white-space: nowrap; }
+.moa-fault-title em { display: block; font: 400 11px/15px var(--moa-font); font-style: normal; color: var(--moa-muted-3); }
 .st-key-moa_fault_ask { background: var(--moa-amber-card); border: 1px solid var(--moa-amber-line); border-radius: 12px; padding: 14px 18px; flex-wrap: nowrap; align-items: center; gap: 10px; }.st-key-moa_ops_login, .st-key-moa_service_login { max-width: 420px; margin: 64px auto 0; background: var(--moa-surface); border: 1px solid var(--moa-line); border-radius: 16px; padding: 24px; }
 .st-key-moa_ops_login [data-testid="stForm"], .st-key-moa_service_login [data-testid="stForm"] { border: none; padding: 0; }
 .st-key-moa_ops_login, .st-key-moa_service_login {

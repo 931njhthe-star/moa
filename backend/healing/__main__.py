@@ -826,16 +826,35 @@ def _recover_worker(target: str) -> None:
                           detail=f"{target} 재시작 상한 초과(10분 내 {monitor.RESTART_LIMIT}회)")
         return
     logging_setup.log("recovery_started", incident_id=incident_id, fault_code="WORKER_DOWN")
+    restart_started = time.monotonic()
     ok, detail = _docker_action(target, "restart")
     stamps.append(now)
     metrics.record("restart_count", target, 1, threshold=1, breached=True)
+    monitor.record_attempt(incident_id, action="restart", result="ok" if ok else "fail",
+                           tool="docker", tool_args={"target": target, "action": "restart"},
+                           error=None if ok else detail,
+                           duration_ms=int((time.monotonic() - restart_started) * 1000))
     verified = False
     if ok:
         deadline = time.monotonic() + READY_WAIT_SEC
+        probe_started = time.monotonic()
         while time.monotonic() < deadline and not verified:
             verified = _ready(target)
             if not verified:
                 time.sleep(1.0)
+        # 준비 확인은 복구와 다른 일이다 — 재시작이 성공해도 안 올라오는 경우가 있어 따로 남긴다
+        monitor.record_attempt(incident_id, action="probe",
+                               result="ok" if verified else "timeout",
+                               tool="ready_check", tool_args={"target": target},
+                               error=None if verified else f"{READY_WAIT_SEC}초 안에 준비되지 않았다",
+                               duration_ms=int((time.monotonic() - probe_started) * 1000))
+    # 준비 확인은 **독립 확인**이기도 하다 — 복구한 쪽(재시작)이 스스로 성공을 판정하지 않고
+    # /ready 를 따로 물어 본 결과다(PRD 5.3 Verification 독립). 남기지 않으면 F-3 사건의
+    # "검증"이 늘 "아직 검증하지 않음"으로 보인다 — 실은 확인했는데 기록이 없는 것이다
+    _record_verification({"incident_id": incident_id, "fault_type": "F-3",
+                          "detail": f"{target} /ready 응답" if verified
+                                    else f"{target} /ready 무응답",
+                          "passed": verified})
     monitor.close_incident(incident_id, recovered=verified)
     if verified:
         _HEALTH_FAILS[target] = 0
@@ -874,27 +893,73 @@ def _retry_after_approval(code: str, target: str | None, incident_id: str) -> tu
     if target and target.startswith("order_interpreter_"):
         fault = CODE_FAULT.get(code)
         if fault:
-            ok, detail, _ = _synthetic_interpreter_request(fault, target, 1, incident_id)
+            ok, detail, _ = _synthetic_interpreter_request(
+                fault, target, 1, incident_id,
+                attempt_observer=_attempt_recorder(incident_id, target))
             return ok, detail
         return False, f"{code} 는 합성 요청으로 확인할 수 없다"
     if target and target.endswith("-backend-1"):
+        started = time.monotonic()
         ok, detail = _docker_action(target, "restart")
+        monitor.record_attempt(incident_id, action="restart", result="ok" if ok else "fail",
+                               tool="docker", tool_args={"target": target, "action": "restart"},
+                               error=None if ok else detail,
+                               duration_ms=int((time.monotonic() - started) * 1000))
         if not ok:
             return False, detail
         deadline = time.monotonic() + READY_WAIT_SEC
+        probe_started = time.monotonic()
         while time.monotonic() < deadline:
             if _ready(target):
+                monitor.record_attempt(incident_id, action="probe", result="ok",
+                                       tool="ready_check", tool_args={"target": target},
+                                       duration_ms=int((time.monotonic() - probe_started) * 1000))
                 return True, f"{target} 재시작 후 준비 확인"
             time.sleep(1.0)
+        monitor.record_attempt(incident_id, action="probe", result="timeout",
+                               tool="ready_check", tool_args={"target": target},
+                               error=f"{READY_WAIT_SEC}초 안에 준비되지 않았다",
+                               duration_ms=int((time.monotonic() - probe_started) * 1000))
         return False, f"{target} 재시작 뒤 준비되지 않았다"
     if target == "menu_store":
+        started = time.monotonic()
         try:
             db.fetch_one("SELECT 1 AS ok", role="healing")
-            return True, "메뉴 저장소 재조회 성공"
         except (db.DbUnavailable, psycopg.Error) as exc:
+            monitor.record_attempt(incident_id, action="reconnect", result="fail",
+                                   tool="menu_store", error=type(exc).__name__,
+                                   duration_ms=int((time.monotonic() - started) * 1000))
             return False, f"메뉴 저장소 재조회 실패: {type(exc).__name__}"
+        monitor.record_attempt(incident_id, action="reconnect", result="ok",
+                               tool="menu_store",
+                               duration_ms=int((time.monotonic() - started) * 1000))
+        return True, "메뉴 저장소 재조회 성공"
     # 대상을 모르면 복구했다고 적지 않는다 — 지어낸 성공이 무인 복구율을 부풀린다
     return False, f"다시 시도할 대상을 알 수 없다(target={target})"
+
+
+def _attempt_recorder(incident_id: str, target: str):
+    """해석기 호출 시도를 `healing.recovery_attempt` 행으로 옮기는 관측자.
+
+    `interpret_resilient` 가 시도마다 `{attempt_no, service, outcome, fault_code, duration_ms}` 를
+    넘겨 준다. 복구 시험은 이것을 회차 JSON 에 담았지만 **실제 사건에는 아무도 붙이지 않아서**
+    사건 상세의 "복구 시도"가 비어 있었다. 같은 관측자를 양쪽에 쓴다.
+
+    처음 부른 쪽이면 `retry`, 반대 해석기로 넘어갔으면 `switch_backup` 이다 —
+    둘을 구분해야 "전환이 실제로 일어났나"를 사후에 볼 수 있다(SC-12 · F-1 복구 전략).
+    """
+    preferred = "backup" if target.endswith("_backup") else "primary"
+
+    def observe(attempt: dict) -> None:
+        service = attempt.get("service")
+        monitor.record_attempt(
+            incident_id,
+            action="retry" if service == preferred else "switch_backup",
+            result="ok" if attempt.get("outcome") == "성공" else "fail",
+            tool="order_interpreter", tool_args={"service": service},
+            error=attempt.get("fault_code"), duration_ms=attempt.get("duration_ms"))
+
+    return observe
 
 
 def _close_incident(incident_id: str, *, recovered: bool, detail: str) -> None:
@@ -928,7 +993,13 @@ def _monitor() -> None:
                               detail=f"{signal['fault_code']} 자동 복구 · 검증 경로 없음 — 담당자 확인")
             continue
         logging_setup.log("recovery_started", incident_id=incident_id, fault_code=signal["fault_code"])
-        ok, detail, _ = _synthetic_interpreter_request(fault, signal["target"], 1, incident_id)
+        ok, detail, _ = _synthetic_interpreter_request(
+            fault, signal["target"], 1, incident_id,
+            attempt_observer=_attempt_recorder(incident_id, signal["target"]))
+        # 실제 사건에도 독립 확인 결과를 남긴다 — 종전에는 시험 회차만 남아서
+        # 사건 상세의 "독립 확인"이 늘 비어 있었다(2026-11-07 실측)
+        _record_verification({"incident_id": incident_id, "fault_type": fault,
+                              "detail": detail, "passed": ok})
         _close_incident(incident_id, recovered=ok, detail=detail)
 
 

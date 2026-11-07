@@ -68,6 +68,20 @@ def _revalidate(cur, session: dict, item_id: str) -> dict:
         " WHERE session_id = %s AND item_id = %s",
         (verdict["validation_status"], verdict["rule_verdict"], verdict["review_reason"],
          verdict["review_reason_text"], unit, estimated, session["session_id"], item_id))
+
+    if verdict["validation_status"] == "passed":
+        # 확인 필요가 풀렸으면 그 항목의 열린 질문도 끝난 것이다 — **여기 한 곳에서** 닫는다.
+        #
+        # 경로마다 닫게 두면 한 경로를 빠뜨리고, 그 경로에서만 조용히 다시 묻는다.
+        # 실제로 그랬다: 답장 반영(`suggestions.decide`)과 개별 바꾸기가 항목은 고치면서
+        # 질문은 `open` 으로 남겨, 이미 벤티로 정해진 사이즈를 질문 큐가 다시 물었다
+        # (2026-11-07 실측 · ORD-0038 q1). `reconcile` 이 질문을 만드는 조건도
+        # `validation_status <> 'passed'` 이므로 닫는 조건을 같은 기준으로 맞춘다.
+        #
+        # 질문에 답해서 풀린 경우는 그 질문이 이미 `answered` 라 여기서 건드리지 않는다
+        # (`void_for_item` 은 `status='open'` 만 본다). 되묻기 상한은 voided 까지 세므로
+        # 닫아도 질문이 무한히 다시 생기지 않는다.
+        questions.void_for_item(session["session_id"], item_id, cur=cur)
     return {**row, **verdict, "unit_price": unit, "estimated_price": estimated}
 
 

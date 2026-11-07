@@ -255,6 +255,86 @@ def mentions(brand_id: str, menu_version: str, text: str) -> list[str]:
     return found
 
 
+# --- 지금 못 내는 메뉴를 가리키는 말 찾기 --------------------------------------
+#
+# 참조 주문("그걸로")이 가리킨 것이 **메뉴 이름이긴 한데 이 매장 기준에는 없을** 때가 있다.
+# 그것을 모르면 참조 해소가 그 말을 그냥 지나쳐 더 오래된 주문을 집는다 — 2026-11-07 실측:
+#
+#   [정하준] 민트 초코가 유명하대        <- 가리킨 것. 스타벅스 기준에는 없다
+#   [최유나] 그럼 난 그걸로 하나~        -> 아이스 아메리카노 로 **확정**됐다(확인 필요도 안 붙음)
+#
+# 맞는 결론은 "민트 초코는 지금 메뉴에 없어요 — 확인해 주세요"다(미등록 → NEEDS_REVIEW).
+_ALL_NAMES: dict = {"at": 0.0, "index": None}
+_ALL_NAMES_TTL_SEC = 300
+
+# 2글자 별칭(아아 · 라떼 · 모카 …)은 잡담에 우연히 들어갈 수 있다. 다른 매장 기준에만 있는
+# 2글자가 걸리면 멀쩡한 참조를 막으므로 3글자부터 본다 — 놓치는 쪽이 틀리는 쪽보다 낫다
+_MIN_UNAVAILABLE_LEN = 3
+
+
+def _all_menu_names() -> dict[str, list[dict]]:
+    """정규화한 이름 · 별칭 -> 그 이름을 쓰는 메뉴들. **모든 매장 기준 · 비활성 포함.**
+
+    `catalog()` 은 지금 매장의 활성 메뉴만 담는다(그래야 매칭이 맞다). 이 사전은 반대로
+    "시스템이 아는 메뉴 이름 전부"를 담아, 못 내는 메뉴를 **가리켰다는 사실**만 알아내는 데 쓴다.
+    여기서 나온 menu_id 로 주문을 만들지 않는다 — 판정에만 쓴다.
+    """
+    now = time.monotonic()
+    if _ALL_NAMES["index"] is not None and now - _ALL_NAMES["at"] < _ALL_NAMES_TTL_SEC:
+        return _ALL_NAMES["index"]
+
+    index: dict[str, list[dict]] = {}
+
+    def add(label: str, row: dict) -> None:
+        key = normalize(label or "")
+        if len(key) < _MIN_UNAVAILABLE_LEN:
+            return
+        index.setdefault(key, []).append(row)
+
+    for row in db.fetch_all(
+            "SELECT menu_id, brand_id, menu_version, name, is_active FROM app.menu"):
+        add(row["name"], row)
+    for row in db.fetch_all(
+            "SELECT a.alias, m.menu_id, m.brand_id, m.menu_version, m.name, m.is_active "
+            "  FROM app.menu_alias a JOIN app.menu m ON m.menu_id = a.menu_id"):
+        add(row["alias"], row)
+
+    _ALL_NAMES.update({"at": now, "index": index})
+    return index
+
+
+def unavailable_mentions(brand_id: str, menu_version: str, text: str) -> list[dict]:
+    """이 문장이 **지금 매장 기준으로는 낼 수 없는 메뉴**를 가리키는가.
+
+    지금 낼 수 있는 메뉴를 가리키면 빈 목록이다 — 그건 `mentions()` 가 할 일이다.
+    겹치지 않게 긴 이름부터 집는 것도 `mentions()` 와 같다.
+    """
+    if mentions(brand_id, menu_version, text):
+        return []
+    key = normalize(text or "")
+    if not key:
+        return []
+    index = _all_menu_names()
+    hits: list[dict] = []
+    taken: list[tuple[int, int]] = []
+    for alias in sorted(index, key=len, reverse=True):
+        start = key.find(alias)
+        if start < 0:
+            continue
+        end = start + len(alias)
+        if any(s < end and start < e for s, e in taken):
+            continue
+        rows = index[alias]
+        if any(r["brand_id"] == brand_id and r["menu_version"] == menu_version
+               and r["is_active"] for r in rows):
+            # 지금 낼 수 있는 메뉴다. `mentions()` 가 못 집었어도 여기서 막지 않는다
+            continue
+        taken.append((start, end))
+        hits.append({"text": alias, "name": rows[0]["name"], "menu_id": rows[0]["menu_id"],
+                     "brand_id": rows[0]["brand_id"], "is_active": rows[0]["is_active"]})
+    return hits
+
+
 def with_temperature(brand_id: str, menu_version: str, hit: dict, hint: str | None) -> dict:
     """온도 단서로 같은 메뉴의 아이스 · 따뜻한 판을 고른다. 메뉴 이름이 온도를 품는다("카페 라떼" / "아이스 카페 라떼").
 

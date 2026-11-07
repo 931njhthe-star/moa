@@ -15,7 +15,10 @@
 `dep_latency_ms` 는 추세용이라 그것만으로는 사건이 되지 않는다 — 넘은 호출은 `timeout_count` 로 따로 남는다.
 """
 
+import json
 import secrets
+
+import psycopg
 
 from app import db
 
@@ -125,6 +128,48 @@ def open_incident(signal: dict) -> str:
     link_lab_injection(incident_id, signal["target"])
     return incident_id
 
+
+
+# `healing.recovery_attempt.action` 의 CHECK 와 같아야 한다 — 어긋나면 INSERT 가 조용히 실패한다
+ATTEMPT_ACTIONS = ("retry", "switch_backup", "restart", "resume",
+                   "regenerate", "reconnect", "cache_fallback", "probe")
+
+
+def record_attempt(incident_id: str | None, *, action: str, result: str,
+                   tool: str | None = None, tool_args: dict | None = None,
+                   error: str | None = None, duration_ms: int | None = None) -> None:
+    """복구로 **무엇을 했는지** 한 줄 남긴다 (D-07 4.15).
+
+    왜 필요한가: 사건은 "정상 복구"로 닫히는데 무엇을 해서 복구됐는지가 어디에도 없었다.
+    `healing.recovery_attempt` 는 스키마 · 뷰 · 화면이 모두 읽는데 **INSERT 하는 코드가
+    아예 없어서** 사건 29건에 0행이었다(2026-11-07 실측). 그래서 사건 상세의 "복구 시도"가
+    늘 비고, `v_metrics.avg_attempts` 가 늘 0.00 이었다 — 숫자가 0 이면 "시도 없이 복구됐다"로
+    읽히는데 실은 기록이 없는 것이다. 둘은 전혀 다른 뜻이다.
+
+    복구 시험(T2)은 회차 결과 JSON 에 시도를 남기므로 **시험만 증거가 있고 실제 장애는 없었다.**
+    여기가 그 비대칭을 없애는 한 곳이다.
+
+    기록이 실패해도 복구를 멈추지 않는다 — 기록은 복구의 전제가 아니다.
+    """
+    if not incident_id:
+        return
+    if action not in ATTEMPT_ACTIONS:
+        raise ValueError(f"action={action} 은 recovery_attempt 의 허용값이 아니다")
+    if result not in ("ok", "fail", "timeout"):
+        raise ValueError(f"result={result} 은 recovery_attempt 의 허용값이 아니다")
+    try:
+        db.execute(
+            "INSERT INTO healing.recovery_attempt"
+            "(incident_id,attempt_no,action,wait_ms,tool,tool_args,result,error,started_at,ended_at) "
+            "SELECT %s, COALESCE(MAX(attempt_no),0)+1, %s, 0, %s, %s::jsonb, %s, %s,"
+            "       NOW() - (COALESCE(%s,0) * INTERVAL '1 millisecond'), NOW() "
+            "  FROM healing.recovery_attempt WHERE incident_id = %s",
+            (incident_id, action, tool,
+             json.dumps(tool_args or {}, ensure_ascii=False), result,
+             (error or None), duration_ms, incident_id), role="healing")
+    except (db.DbUnavailable, psycopg.Error):
+        # 사건이 아직 없거나(외래키) DB 가 흔들리는 중이면 기록만 포기한다
+        pass
 
 
 def close_incident(incident_id: str, *, recovered: bool, manual_check: bool = False) -> None:
@@ -295,6 +340,11 @@ def report_db_outage(record: dict, *, evidence: list[str]) -> str | None:
         "        'db_connection_error',%s,false)",
         (incident_id, f"tr_{secrets.token_hex(6).upper()}", "메뉴 저장소 연결 끊김",
          since_first, since_detected, since_detected, evidence), role="healing")
+    # 이 사건은 **이미 복구된 뒤에** 적힌다 — 복구는 재연결이 성공한 것이고, 그 사실을 남긴다.
+    # 사건만 적고 시도를 비워 두면 화면의 "복구 시도"가 비어 "무엇을 해서 살아났나"를 알 수 없다
+    record_attempt(incident_id, action="reconnect", result="ok", tool="menu_store",
+                   tool_args={"failures": record.get("failures")},
+                   duration_ms=int(max(since_detected, 0) * 1000))
     return incident_id
 
 

@@ -31,8 +31,12 @@ services:
       - "8501:8501"
     expose:
       - "8404"             # 상태 페이지 — moa_core 안에서만 (healing 이 읽는다)
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy-conf/haproxy.cfg"]
+    # 파일이 아니라 **폴더**를 붙인다. 배포는 tar 로 파일을 새로 만들어(새 inode) 덮는데, 파일 단위 bind mount 는
+    # 옛 inode 를 계속 붙들고 있어 HUP 으로 다시 읽어도 **옛 설정**이 읽힌다 — 실측 2026-11-09: socket-proxy 에
+    # stop 허용(11-06 추가)이 3일간 반영되지 않아 F-3 시험이 매번 "Docker stop HTTP 403"으로 실패했다
     volumes:
-      - ./gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./gateway:/usr/local/etc/haproxy-conf:ro
     networks:
       - moa_core
       - moa-a_default
@@ -112,8 +116,10 @@ services:
   socket-proxy:
     image: haproxy:3.2-alpine
     user: root             # docker.sock (root:docker 660) 을 읽으려면 필요. 대신 API 는 cfg 에서 막는다
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy-conf/haproxy.cfg"]
+    # 폴더로 붙이는 이유는 gateway 와 같다 (옛 inode 문제)
     volumes:
-      - ./socket-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./socket-proxy:/usr/local/etc/haproxy-conf:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     expose:
       - "2375"

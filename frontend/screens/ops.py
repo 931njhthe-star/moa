@@ -440,7 +440,7 @@ _STATUS_LABELS = {
     "completed": "실행 종료", "stopped": "중지됨", "failed": "실행 실패",
     "needs_operator_action": "운영자 확인 필요", "invalid": "환경 확인 실패",
     "PASS": "예상대로 통과", "FAIL": "예상과 다름", "NEEDS_REVIEW": "사람 확인 필요",
-    "AWAITING_APPROVAL": "승인 대기", "INVALID": "실행 전 조건 미충족",
+    "AWAITING_APPROVAL": "승인 대기", "INVALID": "실행 전 조건 미충족", "SKIP": "미측정",
 }
 _PHASE_LABELS = {
     "queued": "대기", "preflight": "환경 확인", "fault_injection": "장애 주입",

@@ -139,6 +139,16 @@ log "공용 스택: db · socket-proxy · gateway"
 for c in "$GATEWAY" moa-core-socket-proxy-1; do
   docker exec "$c" kill -HUP 1
 done
+# 다시 읽은 설정이 이 서버의 파일과 같은지 확인한다. 다르면(옛 파일 단위 mount · 옛 inode) 컨테이너를 다시 만든다.
+#   HUP 은 성공해도 옛 설정을 다시 읽을 수 있다 — 2026-11-09 socket-proxy 가 stop 허용 없이 3일간 돌았다
+for pair in "$GATEWAY:gateway" "moa-core-socket-proxy-1:socket-proxy"; do
+  c=${pair%%:*}; svc=${pair#*:}
+  if ! docker exec "$c" cat /usr/local/etc/haproxy-conf/haproxy.cfg 2>/dev/null | cmp -s - "$svc/haproxy.cfg"; then
+    log "$svc 설정이 파일과 다르다 — 컨테이너를 다시 만든다"
+    "${CORE[@]}" up -d --no-build --no-deps --force-recreate --wait --wait-timeout 60 "$svc"
+    docker exec "$c" cat /usr/local/etc/haproxy-conf/haproxy.cfg | cmp -s - "$svc/haproxy.cfg"       || fail "$svc 를 다시 만들어도 설정이 파일과 다르다"
+  fi
+done
 
 # 앱을 바꾸기 전에 DB 를 백업한다 (서버만 · ~/moa/backups · 최근 14개). 실패해도 배포는 계속하되 경고를 남긴다
 if [ "$SKIP_PULL" != "1" ]; then

@@ -187,7 +187,8 @@ def kpis(metrics: dict, trial_sum: dict | None) -> list[dict]:
              _verdict(mttr, mttr is not None and mttr <= MTTR_TARGET_SEC)),
         card("auto", f"{ok}/{valid}" if valid else None, None, f"({pct}%)" if pct is not None else None,
              _verdict(pct, pct is not None and pct >= AUTO_RATE_TARGET)),
-        card("integrity", _int_text(integrity), "건", None,
+        card("integrity", _int_text(integrity), "건",
+             f"시험 {detail['integrity_runs']}회 비교" if integrity is not None and detail.get("integrity_runs") else None,
              _verdict(integrity, integrity is not None and integrity <= INTEGRITY_TARGET)),
     ]
 

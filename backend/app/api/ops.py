@@ -99,6 +99,9 @@ async def fault(request: Request, _: str = Depends(deps.ops_token)):
         raise envelope.bad_request(detail="action must be inject|clear", field="action")
     result = incidents.inject(code, action)
     if not result["ok"]:
+        if result.get("busy"):
+            # 복구 시험이 진행 중 — 실습 환경 거절(403)과 섞지 않는다
+            raise envelope.conflict("TRIAL_ACTIVE", result["user_message"])
         if code in incidents.FAULT_TARGETS or action == "clear":
             # 실습 환경 가드 — 404 로 숨기지 않는다 (D-02 API-049)
             raise envelope.ApiFailure(403, "LAB_ONLY", result["user_message"],

@@ -229,6 +229,8 @@ def status_view() -> dict:
         "services": services,
         "replicas": replica_status(),
         "active_injection": active_injection(),
+        # 복구 시험이 진행 중이면 그 대상 이름 — 화면 T1 이 이 값으로 도구줄을 잠근다(시안 25-3)
+        "trial_holding": trial_holding(),
         "active_interpreter": active,
         "cache_fallback_active": any(r["cache_fallback_active"] for r in rows),
     }
@@ -367,15 +369,24 @@ def inject(code: str | None, action: str = "inject") -> dict:
         return {"ok": False, "user_message": "실습 환경에서만 쓸 수 있어요"}
 
     if action == "clear":
+        # 도구줄이 건 주입만 닫는다. 시험 주입(run_id 있음)은 워크플로가 정리한다 —
+        # 여기서 같이 닫으면 시험 회차의 장애가 중간에 풀려 MTTD · MTTR · 판정이 오염된다
         with db.transaction(role="healing") as cur:
             cur.execute(
                 "UPDATE healing.fault_injection SET cleared_at = NOW() "
-                " WHERE cleared_at IS NULL AND action = 'inject' RETURNING injection_id")
+                " WHERE cleared_at IS NULL AND action = 'inject' AND run_id IS NULL "
+                "RETURNING injection_id")
             cleared = cur.fetchall()
         return {"ok": True, "user_message": "장애를 해제했어요", "cleared": len(cleared)}
 
     if code not in FAULT_TARGETS:
         return {"ok": False, "user_message": "모르는 장애 코드예요"}
+
+    holding = trial_holding()
+    if holding:
+        # 화면 잠금만으로는 부족하다 — 8501(A · B)과 8502(운영 전용) 화면은 서로의 상태를 모른다
+        return {"ok": False, "busy": True,
+                "user_message": f"복구 시험이 {holding}를 쓰고 있어요 · 시험이 끝나면 주입할 수 있어요"}
 
     target, mode = FAULT_TARGETS[code]
     injection_id = ids.injection_id()
@@ -409,6 +420,38 @@ def active_injection() -> dict | None:
         return None
     return {"code": row["fault"], "target": row["target"], "mode": row["mode"],
             "elapsed_sec": int(row["elapsed"] or 0)}
+
+
+_TRIAL_ACTIVE_STATUSES = ("queued", "preflight", "running", "stop_requested", "cleaning")
+
+
+def trial_holding() -> str | None:
+    """진행 중인 복구 시험이 쥔 대상의 화면 이름. 시험이 없으면 None.
+
+    지금 걸린 시험 주입이 있으면 그 대상, 회차 사이(주입 전 · 정리 후)면 현재 회차의 대상을 쓴다.
+    회차 사이에도 잠그는 이유: 다음 회차가 곧 같은 대상에 주입한다.
+    읽지 못하면 None — 상태 블록을 통째로 비우지 않는다(`active_injection` 과 같은 판단).
+    """
+    try:
+        row = db.fetch_one(
+            "SELECT r.cases, r.current_iteration, "
+            "       (SELECT f.target FROM healing.fault_injection f "
+            "         WHERE f.run_id = r.run_id AND f.action = 'inject' AND f.cleared_at IS NULL "
+            "         ORDER BY f.injected_at DESC LIMIT 1) AS injected "
+            "  FROM healing.workflow_run r "
+            " WHERE r.status = ANY(%s) ORDER BY r.created_at DESC LIMIT 1",
+            (list(_TRIAL_ACTIVE_STATUSES),), role="healing")
+    except (db.DbUnavailable, psycopg.Error):
+        return None
+    if not row:
+        return None
+    target = row.get("injected")
+    if not target:
+        cases = row.get("cases") or []
+        index = max(int(row.get("current_iteration") or 1), 1) - 1
+        if isinstance(cases, list) and cases:
+            target = (cases[min(index, len(cases) - 1)] or {}).get("target")
+    return SERVICE_LABEL.get(target, target) if target else "장애 시험 대상"
 
 
 def active_injections() -> list[dict]:

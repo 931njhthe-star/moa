@@ -106,11 +106,13 @@ def conflict(code: str, user_message: str, *, detail: str | None = None,
     return ApiFailure(409, code, user_message, detail=detail, extra=extra)
 
 
-def db_down(detail: str) -> ApiFailure:
+def db_down() -> ApiFailure:
     # DB 장애는 503 이 아니다 — 재시작으로 고쳐지지 않는다 (D-02 2.3 · R-14)
+    # detail 을 싣지 않는다 — 예외 문자열에 접속 정보가 섞여 화면으로 나간다 (QA H-33).
+    # 추적은 응답 meta · X-Trace-Id 의 trace_id 와 서버 로그 db_unavailable 로 한다
     return ApiFailure(200, "DB_UNAVAILABLE",
                       "잠깐 멈췄다가 다시 하고 있어요. 입력한 내용은 그대로 있어요",
-                      detail=detail, retryable=True)
+                      retryable=True)
 
 
 def bad_request(user_message: str = "요청을 처리하지 못했어요. 다시 시도해 주세요", *,

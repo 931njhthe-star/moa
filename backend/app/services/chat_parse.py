@@ -66,16 +66,21 @@ UNNAMED = "이름 없음"
 def parse(raw_text: str) -> dict:
     """`[이름] 메시지` 형식만 본다 (API-011 미리보기와 API-012 가 같은 파서를 쓴다)."""
     messages, unreadable = [], []
-    for line_no, line in enumerate((raw_text or "").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        sender, text = _split(line)
+    lines = [{"line_no": line_no, "text": line.strip(),
+              "notice_text": f"{line_no}번째 줄은 읽지 못했어요"}
+             for line_no, line in enumerate((raw_text or "").splitlines(), start=1) if line.strip()]
+
+    # 디스코드 머리줄이 하나라도 있으면 디스코드 형식으로 먼저 읽는다. 본문에 "[성우] 좋습니다" 처럼
+    # 대괄호가 섞이면 `[이름]` 형식으로 오인해 나머지 줄이 전부 읽지 못한 줄이 됐다(2026-11-09 사용자 보고)
+    discord = _parse_discord(lines) if any(_DISCORD_HEAD.match(l["text"]) for l in lines) else None
+    if discord:
+        messages, unreadable = discord
+        lines = []
+
+    for line in lines:
+        sender, text = _split(line["text"])
         if sender is None:
-            unreadable.append({
-                "line_no": line_no, "text": line,
-                "notice_text": f"{line_no}번째 줄은 읽지 못했어요",
-            })
+            unreadable.append(line)
             continue
         messages.append({
             "message_id": f"m{len(messages) + 1}",
@@ -124,26 +129,41 @@ _NAME_LINE = re.compile(r"^(?:[가-힣]{2,4}|[A-Za-z][A-Za-z.]{1,15})$")
 # 이름에는 공백 · 숫자 · `_` 가 들어갈 수 있다("AIO 2기_이성우"). 복사할 때 분이 잘려 "오전 10:" 로 끝나기도 한다
 # (2026-11-09 사용자 요청: 디스코드 형식 포함)
 _DISCORD_HEAD = re.compile(
-    r"^(?P<name>.+?)\s+[—–-]\s+"
+    r"^(?P<name>.+?)\s*[—–-]\s*"
     r"(?:(?:오늘|어제)\s*|\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2}\s*\.?\s*)?"
     r"(?:오전|오후)\s*\d{1,2}:\d{0,2}$")
 
 
-def _is_name_line(text: str) -> bool:
-    return _name_of(text) is not None
+def _discord_name(text: str) -> str | None:
+    head = _DISCORD_HEAD.match(text)
+    return (head.group("name").strip() or None) if head else None
 
 
 def _name_of(text: str) -> str | None:
     """이름 줄이면 이름을, 아니면 None 을 돌려준다 — 이름만 있는 줄과 디스코드 머리줄을 받는다."""
-    head = _DISCORD_HEAD.match(text)
-    if head:
-        return head.group("name").strip() or None
+    name = _discord_name(text)
+    if name:
+        return name
     if _NAME_LINE.match(text) and not text.endswith("요"):
         return text
     return None
 
 
-def _parse_name_lines(lines: list[dict]) -> tuple[list[dict], list[dict]] | None:
+def _parse_discord(lines: list[dict]) -> tuple[list[dict], list[dict]] | None:
+    """디스코드 복사본을 읽는다 — 이름 줄은 머리줄("이름 — 오전 10:23")만 본다.
+
+    짧은 본문("라떼")을 이름 줄로 잡지 않도록 이름만 있는 줄 규칙은 쓰지 않는다.
+    첫 머리줄 앞의 줄은 누가 쓴 것인지 모르므로 읽지 못한 줄로 둔다.
+    """
+    first = next(i for i, l in enumerate(lines) if _DISCORD_HEAD.match(l["text"]))
+    parsed = _parse_name_lines(lines[first:], name_of=_discord_name)
+    if not parsed:
+        return None
+    messages, unreadable = parsed
+    return messages, lines[:first] + unreadable
+
+
+def _parse_name_lines(lines: list[dict], name_of=_name_of) -> tuple[list[dict], list[dict]] | None:
     """이름 줄 다음에 메시지 줄이 오는 형식을 읽는다. 첫 줄이 이름 줄이 아니면 None(이 형식이 아니다).
 
     이름 줄은 이름만 있는 줄(카카오톡 모바일 등)과 디스코드 머리줄("이름 — 오전 10:23") 두 가지다.
@@ -152,7 +172,7 @@ def _parse_name_lines(lines: list[dict]) -> tuple[list[dict], list[dict]] | None
     앞 사람의 메시지로 붙이되, **대화 맨 끝의 이어진 줄**은 읽지 못한 줄로 둔다 — 매장 요청 한 줄
     ("스타벅스로 갈 예정이야")이 마지막 사람의 주문으로 섞이지 않게 하려는 것이다(PRD 2.4.1).
     """
-    if len(lines) < 2 or not _is_name_line(lines[0]["text"]):
+    if len(lines) < 2 or name_of(lines[0]["text"]) is None:
         return None
     messages, unreadable = [], []
     sender, i = None, 0
@@ -161,8 +181,8 @@ def _parse_name_lines(lines: list[dict]) -> tuple[list[dict], list[dict]] | None
         if _DISCORD_HEAD.match(text) and i + 1 < len(lines) and _DISCORD_HEAD.match(lines[i + 1]["text"]):
             i += 1      # 본문 없는 머리줄(사진만 올린 메시지 등) — 다음 머리줄을 본문으로 먹지 않는다
             continue
-        if _is_name_line(text) and i + 1 < len(lines):
-            sender, body = _name_of(text), _KAKAO_TIME.sub("", lines[i + 1]["text"])
+        if name_of(text) is not None and i + 1 < len(lines):
+            sender, body = name_of(text), _KAKAO_TIME.sub("", lines[i + 1]["text"])
             i += 2
         elif i == len(lines) - 1:
             unreadable.append(lines[i])

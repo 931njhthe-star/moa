@@ -11,10 +11,11 @@ def test_quick_workflow_is_one_bounded_case():
     assert cases[0] == {"fault_type": "F-1", "target": "order_interpreter_primary", "seconds": 120}
 
 
-def test_full_workflow_has_25_cases_and_alternates_backend_targets():
+def test_full_workflow_has_30_cases_and_alternates_backend_targets():
     cases = workflows.build_cases(mode="full", fault_type="F-1", target=None,
                                   repetitions=1, injection_seconds=1)
-    assert len(cases) == 25
+    assert len(cases) == 30                 # F-1 ~ F-6 각 5회 — F-4 포함(2026-11-09)
+    assert sum(1 for case in cases if case["fault_type"] == "F-4") == 5
     f3_targets = [case["target"] for case in cases if case["fault_type"] == "F-3"]
     assert f3_targets == ["moa-a-backend-1", "moa-b-backend-1", "moa-a-backend-1",
                           "moa-b-backend-1", "moa-a-backend-1"]
@@ -61,7 +62,7 @@ GRID_ROWS = [
     {"fault_type": "F-3", "status": "INVALID", "mttd_ms": None, "mttr_ms": None},
     {"fault_type": "F-3", "status": "running", "mttd_ms": None, "mttr_ms": None},
     {"fault_type": "F-3", "status": "queued", "mttd_ms": None, "mttr_ms": None},
-    # F-4 — 분모 25회 밖. 별도 줄로 빠진다
+    # F-4 — 2026-11-09 부터 다른 유형과 같은 칸 규칙으로 무인 복구율에 들어간다
     {"fault_type": "F-4", "status": "PASS", "mttd_ms": 1000, "mttr_ms": 60000},
     {"fault_type": "F-4", "status": "FAIL", "mttd_ms": 1000, "mttr_ms": None},
     {"fault_type": "F-4", "status": "AWAITING_APPROVAL", "mttd_ms": 1000, "mttr_ms": 61000},
@@ -119,19 +120,20 @@ def test_trials_grid_cell_seconds_are_injected_to_recovered(monkeypatch):
     assert {row["fault"]: row for row in grid["rows"]}["F-3"]["cells"][0]["sec"] is None
 
 
-def test_trials_grid_keeps_f4_in_its_own_row_outside_the_denominator(monkeypatch):
+def test_trials_grid_counts_f4_like_other_faults(monkeypatch):
     grid, _ = _grid(monkeypatch, GRID_ROWS)
-    assert "F-4" not in [row["fault"] for row in grid["rows"]]
-    # 안전 전환 여부만 본다 — 차단 후 승인 대기도 전환이 일어난 것이다(F-4 기대 결과)
-    assert [c["result"] for c in grid["f4"]["cells"]] == ["switched", "not_switched", "switched"]
+    f4 = {row["fault"]: row for row in grid["rows"]}["F-4"]
+    # probe 성공은 사람 없이 복구, 승인 대기는 승인 칸, 실패는 실패
+    assert sorted(c["result"] for c in f4["cells"]) == ["approved", "auto", "failed"]
+    assert grid["f4"] is None               # 별도 줄은 더 내지 않는다
 
 
 def test_trials_grid_covers_every_recoverable_fault_and_sc4_denominator(monkeypatch):
     grid, _ = _grid(monkeypatch, GRID_ROWS)
     # 데이터가 없는 유형도 줄은 둔다 — 격자에 구멍이 나면 "안 한 것"과 "줄이 빠진 것"을 구분할 수 없다
-    assert [row["fault"] for row in grid["rows"]] == ["F-1", "F-2", "F-3", "F-5", "F-6"]
-    assert grid["rows"][3]["cells"] == [] and grid["rows"][4]["cells"] == []
-    assert grid["total_runs"] == 25        # F-1 · F-2 · F-3 · F-5 · F-6 각 5회 (SC-4 분모 · F-4 제외)
+    assert [row["fault"] for row in grid["rows"]] == ["F-1", "F-2", "F-3", "F-4", "F-5", "F-6"]
+    assert grid["rows"][4]["cells"] == [] and grid["rows"][5]["cells"] == []
+    assert grid["total_runs"] == 30        # F-1 ~ F-6 각 5회 — F-4 포함(2026-11-09)
 
 
 def test_trials_grid_with_no_history_is_empty_not_an_empty_grid(monkeypatch):

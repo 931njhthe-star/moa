@@ -17,6 +17,24 @@ from app.interpreter_client import InterpreterError, interpret_resilient
 from app.services import incidents, menu, metrics, monitor, workflows
 
 LOG = logging.getLogger("moa.healing")
+
+
+def _log_failure(message: str, *args) -> None:
+    """except 블록 안에서 부른다. DB 예외면 전문 · traceback 대신 안전한 칸만 남긴다 (QA H-33).
+
+    psycopg 예외 문자열과 traceback 에는 접속 주소 · 롤 이름이 섞여 나온다. DB 와 무관한 예외는
+    디버깅을 위해 종전처럼 traceback 을 남긴다.
+    """
+    import sys
+
+    exc = sys.exc_info()[1]
+    if isinstance(exc, (db.DbUnavailable, psycopg.Error)):
+        fields = " ".join(f"{k}={v}" for k, v in db.error_fields(exc).items() if v is not None)
+        LOG.error("%s | %s", (message % args) if args else message, fields)
+    else:
+        LOG.exception(message, *args)
+
+
 WORKER_ID = os.getenv("HOSTNAME") or socket.gethostname()
 POLL_SEC = 1.0
 LEASE_SEC = 30
@@ -596,7 +614,7 @@ def _run(run: dict) -> None:
             except Exception as exc:  # worker must always attempt cleanup and keep the run auditable
                 result = {"fault_type": fault, "target": target, "passed": False,
                           "detail": f"실행 오류: {type(exc).__name__}"}
-                LOG.exception("workflow iteration failed run_id=%s iteration=%s", run_id, no)
+                _log_failure("workflow iteration failed run_id=%s iteration=%s", run_id, no)
             _record_verification(result)
             iteration_status = "PASS" if result.get("passed") else "FAIL"
             if result.get("detail") == "NEEDS_REVIEW":
@@ -648,14 +666,14 @@ def _run(run: dict) -> None:
         _update_run(run_id, status=final_status, phase="cleanup", summary=summary)
         _event(run_id, "run_finished", f"workflow {final_status}", details=summary)
     except Exception:
-        LOG.exception("workflow run failed run_id=%s", run_id)
+        _log_failure("workflow run failed run_id=%s", run_id)
         try:
             db.execute("UPDATE healing.fault_injection SET cleared_at=COALESCE(cleared_at,NOW()) "
                        "WHERE run_id=%s AND action='inject' AND cleared_at IS NULL", (run_id,), role="healing")
             _update_run(run_id, status="failed", phase="cleanup")
             _event(run_id, "run_failed", "실행 중 오류. 남은 주입을 정리했습니다")
         except Exception:
-            LOG.exception("workflow emergency cleanup failed run_id=%s", run_id)
+            _log_failure("workflow emergency cleanup failed run_id=%s", run_id)
     finally:
         db.execute("DELETE FROM healing.workflow_lease WHERE lease_name='active' AND run_id=%s AND worker_id=%s",
                    (run_id, WORKER_ID), role="healing")
@@ -711,13 +729,41 @@ def _db_watch() -> None:
             record, evidence=[f"healing 저장소 조회 연속 {record['failures']}회 실패",
                               f"끊긴 구간 약 {seconds:.0f}초"])
     except Exception:      # noqa: BLE001 — 막 돌아온 DB 가 다시 끊길 수 있다. 다음 순회에 다시 본다
-        LOG.exception("db outage report failed")
+        _log_failure("db outage report failed")
         return
     if incident_id:
         logging_setup.log("incident_detected", incident_id=incident_id, fault_code="DB_UNAVAILABLE",
                           target="menu_store", detection_metric="db_connection_error")
         logging_setup.log("recovery_verified", incident_id=incident_id,
                           detail=f"저장소 재연결 확인 · 끊긴 구간 약 {seconds:.0f}초")
+
+
+def _clear_orphan_injections() -> None:
+    """끝난 시험이 닫지 못한 주입을 닫는다.
+
+    시험 주입(run_id 있음)은 도구줄 [해제]로 닫히지 않는다(incidents.inject). 그래서 시험이 정리 단계에서
+    실패하면 주입이 영원히 남고 — 해석기 /health 503 → 장애 시험 환경점검 실패 → 새 시험을 못 돌려
+    정리할 방법이 없는 교착이 된다(2026-11-09 보고). 진행 중이 아닌 시험의 주입만 닫는다.
+    F-3(kill) 은 기록만 닫으면 컨테이너가 꺼진 채 남으므로 허용목록 재시작을 먼저 한다.
+    """
+    rows = db.fetch_all(
+        "SELECT fi.injection_id, fi.run_id, fi.fault, fi.target, fi.mode "
+        "  FROM healing.fault_injection fi JOIN healing.workflow_run r ON r.run_id = fi.run_id "
+        " WHERE fi.action = 'inject' AND fi.cleared_at IS NULL "
+        "   AND r.status NOT IN ('queued','preflight','running','stop_requested','cleaning')",
+        role="healing")
+    for row in rows:
+        if row["fault"] == "F-3" and row["mode"] == "kill":
+            recovered, detail = _docker_action(row["target"], "restart")
+            if not recovered:
+                LOG.error("orphan F-3 injection restart failed run_id=%s target=%s: %s",
+                          row["run_id"], row["target"], detail)
+                continue
+        db.execute("UPDATE healing.fault_injection SET cleared_at = NOW() "
+                   " WHERE injection_id = %s AND cleared_at IS NULL", (row["injection_id"],), role="healing")
+        _event(row["run_id"], "orphan_injection_cleared",
+               f"끝난 시험이 남긴 {row['fault']} 주입을 정리했습니다",
+               details={"injection_id": row["injection_id"], "target": row["target"]})
 
 
 def _safe(step) -> None:
@@ -731,7 +777,7 @@ def _safe(step) -> None:
     except (db.DbUnavailable, psycopg.Error):
         pass
     except Exception:      # noqa: BLE001
-        LOG.exception("worker step failed: %s", getattr(step, "__name__", step))
+        _log_failure("worker step failed: %s", getattr(step, "__name__", step))
 
 
 _HEALTH_FIRST: dict[str, float] = {}      # 대상별 첫 헬스체크 실패 시각(단조 시계)
@@ -1011,6 +1057,7 @@ def main() -> None:
         try:
             _db_watch()                   # 맨 먼저 — DB 가 죽으면 아래 단계가 전부 깨진다
             _safe(_heartbeat)
+            _safe(_clear_orphan_injections)   # 끝난 시험이 남긴 주입 — 환경점검 교착을 막는다
             _safe(_monitor)               # 상시 감시는 시험 워크플로와 **나란히** 돈다
             _safe(_approval_watch)        # 승인받은 사건의 복구를 이어 간다
             _safe(_lab_kill_watch)        # 도구줄 F-3 집행 — 탐지보다 먼저 둔다
@@ -1021,10 +1068,10 @@ def main() -> None:
             else:
                 time.sleep(POLL_SEC)
         except (db.DbUnavailable, psycopg.Error):
-            LOG.exception("worker database operation failed")
+            _log_failure("worker database operation failed")
             time.sleep(2)
         except Exception:
-            LOG.exception("worker loop failed")
+            _log_failure("worker loop failed")
             time.sleep(2)
 
 

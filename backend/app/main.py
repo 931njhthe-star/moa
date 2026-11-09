@@ -57,7 +57,8 @@ async def trace_and_log(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:       # noqa: BLE001 — 어떤 예외든 포장된 500 으로 나간다
-        error = f"{type(exc).__name__}: {exc}"[:500]
+        # 예외 메시지는 로그 · request_history 에 남기지 않는다 — DB 오류면 접속 정보가 섞인다 (H-33)
+        error = type(exc).__name__
         response = envelope.internal_error(type(exc).__name__).response()
         # 5.6.1 에이전트 실행(FT-02) — 처리되지 않은 예외 1회가 사건 판정 조건이다.
         # 동기 DB 쓰기를 이벤트 루프에서 돌리면 백엔드가 그 동안 모든 요청을 못 받는다
@@ -93,23 +94,24 @@ async def on_api_failure(_: Request, exc: envelope.ApiFailure):
 
 @app.exception_handler(db.DbUnavailable)
 async def on_db_unavailable(request: Request, exc: db.DbUnavailable):
+    # 예외 전문을 남기지 않는다 — 오류 코드 · 유형 · trace_id 로 추적한다 (QA H-33 · NFR-003)
     logging_setup.log("db_unavailable", level="warning", trace_id=envelope.current_trace.get(),
-                      path=request.url.path, detail=str(exc)[:300])
+                      path=request.url.path, where="on_db_unavailable", **db.error_fields(exc))
     # 5.6.1 DB(FT-03) — 연결 오류를 메트릭으로 남긴다. DB 가 죽어 있으면 기록도 실패하는데
     # 그건 삼켜진다. 그 구간은 healing 의 DbOutage 가 메모리에 보류해 복구 후 적는다
     asyncio.get_running_loop().run_in_executor(
         None, lambda: metrics.record("db_connection_error", "menu_store", 1,
                                      threshold=2, breached=True,
                                      trace_id=envelope.current_trace.get()))
-    return envelope.db_down(str(exc)).response()
+    return envelope.db_down().response()      # 응답에는 내부 정보를 싣지 않는다 (H-33)
 
 
 @app.exception_handler(psycopg.OperationalError)
 async def on_db_operational(request: Request, exc: psycopg.OperationalError):
     # 연결 끊김 · statement_timeout(2초) 초과 — F-6 의 입구라 DB 장애와 같은 응답이다
     logging_setup.log("db_unavailable", level="warning", trace_id=envelope.current_trace.get(),
-                      path=request.url.path, detail=str(exc).strip().splitlines()[0][:300])
-    return envelope.db_down(type(exc).__name__).response()
+                      path=request.url.path, where="on_db_operational", **db.error_fields(exc))
+    return envelope.db_down().response()
 
 
 @app.exception_handler(RequestValidationError)

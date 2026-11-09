@@ -15,6 +15,7 @@ D-07 7.2 가 "붙잡지 않고 새로 연다"로 지키려던 것 — DB 가 잠
   healing  사건 R/W · 주문 읽기만   <- API-044 승인 · API-049 주입이 이 롤로 쓴다
 """
 
+import re
 import threading
 from contextlib import contextmanager
 import time
@@ -33,7 +34,53 @@ _lock = threading.Lock()
 
 
 class DbUnavailable(RuntimeError):
-    """DB 에 닿지 못했다 — F-6 의 입구다. 호출자가 캐시 폴백을 고른다."""
+    """DB 에 닿지 못했다 — F-6 의 입구다. 호출자가 캐시 폴백을 고른다.
+
+    메시지에는 **코드가 정한 고정 문구만** 넣는다. psycopg 예외 문자열은 접속 주소 · 롤 이름 ·
+    비밀번호 일부가 섞여 나오므로 넣지 않는다(2026-11-09 QA H-33 재지적 · NFR-003).
+    """
+
+
+_SECRET_PATTERNS = [
+    # postgresql://user:pw@host:5432/db  ->  postgresql://***@***
+    (re.compile(r"\b(postgres(?:ql)?(?:\+\w+)?)://[^\s'\"]+", re.I), r"\1://***"),
+    # password=... · user=... · host=... · dbname=... (libpq conninfo 키워드)
+    (re.compile(r"\b(password|passwd|pwd|user|host|hostaddr|dbname|port)\s*=\s*('[^']*'|\"[^\"]*\"|\S+)", re.I),
+     r"\1=***"),
+    # connection to server at "db" (172.18.0.2), port 5432 failed
+    (re.compile(r"\bserver at \"[^\"]*\"(?: \([^)]*\))?(?:, port \d+)?", re.I), "server at ***"),
+    (re.compile(r"\bfor user \"[^\"]*\"", re.I), "for user ***"),
+    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "***"),
+]
+
+
+def redact(text: str | None) -> str:
+    """로그에 남길 문자열에서 접속 정보 · 인증 정보를 가린다. 한 줄 · 200자로 자른다."""
+    if not text:
+        return ""
+    line = str(text).strip().splitlines()[0] if str(text).strip() else ""
+    for pattern, repl in _SECRET_PATTERNS:
+        line = pattern.sub(repl, line)
+    return line[:200]
+
+
+def error_fields(exc: BaseException) -> dict:
+    """DB 오류를 로그에 남길 때 쓰는 **안전한** 칸 — 예외 전문 대신 유형으로 추적한다 (H-33).
+
+    error_code   DB_UNAVAILABLE (D-02 오류 코드)
+    exc_type     예외 유형 이름
+    cause_type   원인 예외 유형 (psycopg 쪽 — DbUnavailable 이 감싼 것)
+    reason       DbUnavailable 의 고정 문구(코드가 정한 것만) · 그 밖의 예외는 남기지 않는다
+    """
+    cause = exc.__cause__ or exc.__context__
+    fields = {"error_code": "DB_UNAVAILABLE", "exc_type": type(exc).__name__,
+              "cause_type": type(cause).__name__ if cause else None}
+    if isinstance(exc, DbUnavailable):
+        fields["reason"] = redact(str(exc))
+    sqlstate = getattr(exc, "sqlstate", None) or getattr(cause, "sqlstate", None)
+    if sqlstate:
+        fields["sqlstate"] = sqlstate
+    return fields
 
 
 def _role_name(role: str) -> str:
@@ -67,7 +114,8 @@ def connect(role: str = "app"):
     except PoolTimeout as exc:
         raise DbUnavailable(f"연결 대기 초과 ({config.CONNECT_TIMEOUT_SEC}초)") from exc
     except psycopg.OperationalError as exc:
-        raise DbUnavailable(str(exc).strip().splitlines()[0]) from exc
+        # psycopg 메시지에는 접속 주소 · 롤 이름이 들어 있다 — 유형만 남긴다 (H-33)
+        raise DbUnavailable(f"연결 실패 ({type(exc).__name__})") from exc
     try:
         yield conn
     except BaseException as exc:
@@ -163,6 +211,7 @@ def health() -> dict:
                         (config.MENU_VERSION,))
         return {"state": "connected", "text": "connected", "menu_rows": row["n"]}
     except DbUnavailable as exc:
-        return {"state": "down", "text": str(exc)}
+        # /health 는 인증 없이 열린다 — 고정 문구(redact 거친 것)만 내보낸다 (H-33)
+        return {"state": "down", "text": redact(str(exc)) or "연결 실패"}
     except psycopg.Error as exc:
-        return {"state": "error", "text": str(exc).strip().splitlines()[0]}
+        return {"state": "error", "text": f"질의 실패 ({type(exc).__name__})"}

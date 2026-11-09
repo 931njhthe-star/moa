@@ -368,7 +368,7 @@ OT1_HOLDING_HEAD = "{code} {name} · {target}"
 OT1_SEC = "{sec}초"
 OT1_CLEAR_ASK = "주입한 장애를 모두 해제할까요?"
 # 시험이 같은 대상을 쥐고 있는 동안 (시안 25-3)
-OT1_LOCKED = "복구 시험이 {target}를 쓰고 있어요 · F-3은 시험이 끝나면 누를 수 있어요"
+OT1_LOCKED = "복구 시험이 {target}를 쓰고 있어요 · 시험이 끝나면 누를 수 있어요"
 
 # T1 타일 설명 — 무엇이 일어나고 언제 끝나는지까지 한 줄에 쓴다
 OT1_HELP = {

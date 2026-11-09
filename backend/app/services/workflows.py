@@ -330,7 +330,12 @@ def _trial_cell(row: dict) -> dict:
     """
     mttd, mttr = row.get("mttd_ms"), row.get("mttr_ms")
     total_ms = None if mttr is None else (mttd or 0) + mttr
-    return {"result": _CELL_BY_STATUS.get(row.get("status"), "pending"),
+    # F-5 는 NEEDS_REVIEW 로 끝나는 것이 기대 결과라 성공 칸이다(2026-11-09 팀 결정).
+    # healing 은 이제 PASS 로 적지만, 그 전에 NEEDS_REVIEW 로 저장된 회차도 같은 칸에 넣는다
+    status = row.get("status")
+    if row.get("fault_type") == "F-5" and status == "NEEDS_REVIEW":
+        status = "PASS"
+    return {"result": _CELL_BY_STATUS.get(status, "pending"),
             "sec": None if total_ms is None else round(total_ms / 1000),
             "mttr_sec": None if mttr is None else round(mttr / 1000)}
 

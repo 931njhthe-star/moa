@@ -33,7 +33,10 @@ _PROPOSAL = re.compile(
     # **낱말을 적어 둔다** — `[가-힣]실래요` 로 묶으면 "마실래요"(본인 주문)까지 제안으로 읽힌다
     r"하실래|하실까|가실래|가실까|드실래|드실까|하시겠|가시겠|드시겠|하시죠|가시죠|합시다|하자|가자|"
     # 확인하는 물음 — "스타벅스에서 주문하는 거죠?" · "맞죠?" · "어디로 가나요?"
-    r"거죠|거지\?|맞죠|맞나요|맞지|인가요|인가\?|건가요|나요\?|난가요")
+    r"거죠|거지\?|맞죠|맞나요|맞지|인가요|인가\?|건가요|나요\?|난가요|"
+    # 주문을 **받으려는** 말 — "다들 드실거 이야기주세요~"가 "주세요" 때문에 주문으로 읽혀
+    # "메뉴를 알아듣지 못했어요" 질문이 떴다(2026-11-09 사용자 보고)
+    r"드실\s*(?:거|것|분)|드시고\s*싶은|(?:이야기|얘기|말씀)\s*(?:해\s*)?주")
 # 주문 문형 — 이것이 있으면 메뉴를 못 알아들었어도 주문으로 보고 담당자에게 묻는다(보고 2번).
 #   "요"로 끝나는 것만으로는 주문이 아니다("어디로 가나요")
 _ORDER_VERB = re.compile(r"주세요|주시|부탁|먹을래|마실래|먹을게|마실게|먹고\s*싶|마시고\s*싶|"
@@ -51,6 +54,10 @@ TALLY = re.compile(r"(?:총|모두|전부|일단|다\s*합쳐|합쳐서)\s*\d+\s
 #   문장이 통째로 기타 요청이 되어 메뉴 표현에서 지워진다
 _CUSTOM_HINT = ("빨대", "담아", "채워", "따로", "포장", "캐리어", "휴지", "컵홀더",
                 "데워", "덜어", "나눠")
+# 기타 요청 힌트는 **쉼표 구절 단위**로 뗀다. 문장 단위로 떼면 "아이스 바닐라 라떼로 부탁해요, 빨대는 빼주시고 …"
+#   처럼 주문과 요청이 한 문장일 때 주문까지 함께 지워진다. 남은 것이 없으면 원문 전체로 분류하므로 요청의
+#   "빼주"가 취소 신호에 걸려 **주문이 조용히 사라졌다**(2026-11-09 사용자 보고 · 디스코드 대화)
+_CLAUSE = r"[.!?\n,]"
 
 # 기타 요청 옵션 표현 — 메뉴판 옵션(size · ice · shot · bean · cup)이 아닌 사양 요청 (2026-11-04)
 #   출처: 스타벅스_메뉴별_옵션정리.xlsx 의 시럽 · 우유 · 휘핑·드리즐 · 얼음·컵·기타 열.
@@ -81,7 +88,10 @@ _REQUEST_RULES = [re.compile(p + _REQ_MOD) for p in (
 #   어느 매장 기준에도 없는 사이즈 표현은 기본 사이즈로 채우지 않고 묻는다.
 #   "숏"은 일부 스타벅스 메뉴(따뜻한 티 · 초콜릿 등)에만 있다(2026-11-04 가격표). 메뉴마다 갈리므로
 #   바로 정하지 않고 묻는다 — 확인 질문이 그 메뉴의 사이즈 버튼(숏 포함 여부)을 보여 준다
-_AMBIGUOUS_SIZE = ("큰 거", "큰거", "작은 거", "작은거", "제일 큰", "제일 작은", "보통 거",
+#   "큰걸로요"가 빠져 있어 **큰 것을 달라는 주문이 기본 사이즈(톨)로 채워졌다**(2026-11-09 사용자 보고)
+_AMBIGUOUS_SIZE = ("큰 거", "큰거", "큰 걸", "큰걸", "큰 사이즈", "큰사이즈",
+                   "작은 거", "작은거", "작은 걸", "작은걸", "작은 사이즈", "작은사이즈",
+                   "제일 큰", "제일 작은", "보통 거",
                    "중간 사이즈", "중간사이즈", "중간 거", "중간거", "중간으로",
                    "미디엄", "스몰", "숏")
 # 한 글자 영문 사이즈(M · S · L)는 앞뒤가 영문이 아닐 때만 — "MD" 같은 낱말에 걸리지 않게
@@ -110,6 +120,16 @@ _TRAIT_WORDS = {
     "따뜻한 거": "따뜻한", "뜨거운 거": "따뜻한",
     "티 종류": "티", "차 종류": "티",
 }
+
+# 맛 낱말 → trait_tags. **참조 주문이 가리킨 잡담**에서만 쓴다("초코가 유명하대요" → "그럼 난 그걸로").
+#   _TRAIT_WORDS 에 넣지 않는 이유: "초콜릿"은 메뉴 이름(아이스 시그니처 초콜릿)에 들어가서, 주문 문장에서
+#   특성 표현으로 읽으면 메뉴가 정해졌는데도 "메뉴를 골라 주세요"가 뜬다(위 ★ 주의와 같은 이유)
+FLAVOR_WORDS = {"초코": "초콜릿", "초콜릿": "초콜릿", "쪼꼬": "초콜릿", "쇼콜라": "초콜릿"}
+
+
+def flavor_traits(text: str) -> list[str]:
+    return sorted({tag for word, tag in FLAVOR_WORDS.items() if word in (text or "")})
+
 
 # 옵션 추출 — (정규식, option_group, option_value)
 _OPTION_RULES = [
@@ -277,7 +297,7 @@ def _traits(text: str) -> list[str]:
 
 def _custom_request(text: str) -> str | None:
     """기타 요청 — 힌트 낱말이 든 문장 + 기타 요청 옵션 구절. 금액에 반영하지 않으므로 원문을 보존한다."""
-    sentences = [s.strip() for s in re.split(r"[.!?\n]", text) if s.strip()]
+    sentences = [s.strip() for s in re.split(_CLAUSE, text) if s.strip()]
     picked = [s for s in sentences if _has(s, _CUSTOM_HINT)]
     for phrase in request_phrases(text):
         if not any(phrase in part for part in picked):
@@ -356,7 +376,7 @@ def _menu_text(text: str) -> str:
                       r"할게요|할래요|으로|로|은|는|을|를)\b",
                       " ", stripped)
     # 기타 요청 문장은 메뉴 표현에서 뺀다
-    for sentence in re.split(r"[.!?\n]", stripped):
+    for sentence in re.split(_CLAUSE, stripped):
         if _has(sentence, _CUSTOM_HINT):
             stripped = stripped.replace(sentence, " ")
     stripped = re.sub(r"\s+", " ", stripped)
@@ -419,7 +439,7 @@ def order_text(text: str) -> str:
     보면 주문 추가가 취소로 분류되고, 그 사람의 주문이 조용히 사라진다.
     기타 요청은 **금액에도 판정에도 영향을 주지 않는** 문장이므로 분류에서 제외한다.
     """
-    kept = [s.strip() for s in re.split(r"[.!?\n]", text or "")
+    kept = [s.strip() for s in re.split(_CLAUSE, text or "")
             if s.strip() and not _has(s, _CUSTOM_HINT)]
     # 기타 요청 구절도 뺀다 — "휘핑 빼 주세요"의 `빼 주`가 취소 신호와 같은 글자다
     kept = [k for k in (re.sub(r"\s+", " ", _without_requests(k)).strip() for k in kept) if k]

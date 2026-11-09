@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 
 from app import config, db, ids, logging_setup
 from app.services import chat_parse, intake
@@ -186,10 +187,25 @@ def _named_person(text: str, events) -> str | None:
     """
     best = None
     for person in {e.get("person") for e in events if e.get("person")}:
-        for token in (person, person[1:] if len(person) >= 3 else None):
-            if token and token in text and (best is None or len(token) > best[0]):
+        for token in _name_tokens(person):
+            if token in text and (best is None or len(token) > best[0]):
                 best = (len(token), person)
     return best[1] if best else None
+
+
+def _name_tokens(person: str) -> set[str]:
+    """대화에서 그 사람을 부르는 말 후보 — 전체 · 성을 뗀 이름 · 닉네임의 끝 이름.
+
+    디스코드 닉네임은 앞에 소속이 붙고(`AIO 2기_이홍진`) 별명이 섞인다(`노곤민우`). 전체와 첫 글자를 뗀 것만
+    보면 "민우님과 같은걸로"에서 `노곤민우`를 찾지 못해 **가장 가까운 남의 메뉴가 조용히 붙었다**(2026-11-09).
+    끝 이름은 `_` · 공백 뒤 마지막 덩어리와, 한글 3자 이상이면 그 끝 두 글자다. 두 글자 미만은 쓰지 않는다.
+    """
+    tail = re.split(r"[_\s]+", person.strip())[-1]
+    tokens = {person, tail}
+    for name in (person, tail):
+        if len(name) >= 3 and re.fullmatch(r"[가-힣]+", name):
+            tokens |= {name[1:], name[-2:]}
+    return {t for t in tokens if len(t) >= 2}
 
 
 def _referenced_menus(events, upto_index, *, brand_id, menu_version) -> list[dict]:
@@ -235,7 +251,26 @@ def _referenced_menus(events, upto_index, *, brand_id, menu_version) -> list[dic
         # 빈 목록으로 돌아가면 미등록으로 가고, 미등록은 담당자에게 묻는다(도메인 용어 "확인 필요").
         if menu_service.unavailable_mentions(brand_id, menu_version, text):
             return []
+        # 메뉴 이름은 없지만 **맛**을 가리킨 말이면 그 맛의 메뉴들이 후보다 — 여기서 멈춘다.
+        # 지나치면 "초코가 유명하대요" → "그럼 난 그걸로"가 세 메시지 앞 남의 딸기 딜라이트로
+        # 조용히 확정됐다(2026-11-09 사용자 보고). 후보는 둘 이상이라 자동 확정되지 않고 담당자에게 묻는다
+        if _flavor_candidates(text, earlier, found, brand_id=brand_id, menu_version=menu_version):
+            break
     return found[:5]
+
+
+def _flavor_candidates(text: str, earlier: dict, found: list[dict], *, brand_id: str,
+                       menu_version: str) -> bool:
+    """잡담 속 맛 낱말("초코")의 메뉴들을 후보로 넣는다. 넣었으면 True — 참조 주문은 이 메시지를 가리킨다."""
+    from app.services import intake as intake_service
+
+    traits = intake_service.flavor_traits(text)
+    if not traits:
+        return False
+    hits = menu_service.by_traits(brand_id, menu_version, traits)
+    found.extend({**hit, "trait_tags": hit.get("reason_tags") or hit.get("trait_tags", []),
+                  "source_message_id": earlier["message_id"]} for hit in hits)
+    return bool(hits)
 
 
 def match_item(item: dict, *, brand_id: str, menu_version: str) -> dict:

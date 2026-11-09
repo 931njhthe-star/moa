@@ -180,15 +180,11 @@ aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS
 bash scripts/deploy.sh                                                        # 공용 → 해석 서비스 → 앱 A → (A UP 확인) → 앱 B
 ```
 
-- 새 서버(빈 DB)라면 먼저 DB 를 초기화한 뒤 `deploy.sh` 를 돌린다 — 초기화 전에는 backend 가 `unhealthy` 라 A 교체에서 멈춘다.
-  **이미지를 먼저 받는다** — 이미지가 없을 때 `run` 은 빌드를 시도하는데 서버에는 소스(`./backend`)가 없어 실패한다 (D-03 7.4)
+- **DB 스키마 · 기준 시드는 `deploy.sh` 가 반영한다** — 앱을 바꾸기 전에, 배포하는 바로 그 이미지(TAG)로 `sql/run_sql.py` 를 돌린다(4-1 단계).
+  실패하면 앱 스택을 바꾸지 않고 멈춘다. 따로 `run_sql.py` 를 돌릴 필요가 없다 — 새 서버(빈 DB)도 `deploy.sh` 한 번이다 (D-03 7.4)
 
 ```bash
 sh scripts/init-networks.sh
-docker compose -f docker-compose.core.yml -p moa-core pull
-docker compose -f docker-compose.core.yml -p moa-core up -d db
-docker compose -f docker-compose.app.yml -p moa-a pull
-docker compose -f docker-compose.app.yml -p moa-a run --rm backend python sql/run_sql.py
 bash scripts/deploy.sh
 ```
 

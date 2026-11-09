@@ -10,6 +10,7 @@
 #   2. 이미지 받기
 #   3. healing 멈춤 — 교체 중 컨테이너가 내려가는 것을 장애로 보고 재시작하지 않게 (끝나면 반드시 다시 켠다)
 #   4. 공용 스택: db · socket-proxy · gateway (설정 파일은 다시 읽힌다) → DB 백업 (서버만)
+#   4-1. DB 스키마 · 기준 시드 반영 — **이번에 배포하는 이미지(TAG)**의 sql/run_sql.py. 실패하면 앱을 바꾸지 않고 멈춘다
 #   5. 해석 서비스: backup → primary 한 개씩 (둘이 동시에 내려가지 않게)
 #   6. 앱 스택: A 교체 → 게이트웨이에서 A UP 확인 → B 교체 → B UP 확인. A 가 UP 이 안 되면 B 는 건드리지 않는다
 #   6-1. 운영 대시보드 스택(moa-ops) 교체 — 실패해도 경고만 (서비스는 A · B)
@@ -143,6 +144,17 @@ done
 if [ "$SKIP_PULL" != "1" ]; then
   bash scripts/db-backup.sh || echo "::warning::배포 전 DB 백업 실패 — 배포는 계속한다. 디스크 · db 상태를 확인할 것" >&2
 fi
+
+# ---------- 4-1. DB 스키마 · 기준 시드 ----------
+# 새 코드가 새 열 · 테이블을 읽는데 DB 가 옛 스키마면 그 API 가 500 이 된다
+#   (2026-11-09 운영: healing.incident.run_id 가 없어 /api/ops/incidents 500 → 운영 대시보드 전체가 "잠시 후 다시 눌러 주세요")
+# 사람이 따로 돌리면 빠뜨리거나, 서버에 남은 옛 `latest` 이미지로 돌려 새 SQL 파일이 없는 채로 끝난다.
+# 그래서 앱을 바꾸기 **전에**, 바꿀 바로 그 이미지(TAG)로 돌린다. 파일은 모두 재실행 가능하다
+#   (IF NOT EXISTS · ON CONFLICT · 롤은 비밀번호만 갱신. 14 데모 시드는 기본 순서에 없다)
+# 스키마 변경은 더하기만 하므로 옛 앱이 잠깐 새 스키마 위에서 돌아도 괜찮다. 실패하면 앱 교체 전에 멈춘다
+log "DB 스키마 · 기준 시드 반영 (moa-backend:${TAG:-latest})"
+"${APP[@]}" -p moa-a run --rm --no-deps -T backend python sql/run_sql.py \
+  || fail "DB 스키마 반영 실패 — 앱 스택은 교체하지 않았다. 위 오류의 SQL 파일을 확인할 것"
 
 # ---------- 5. 해석 서비스 — 한 개씩 ----------
 for svc in interpreter-backup:8102 interpreter-primary:8101; do

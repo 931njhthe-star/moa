@@ -207,3 +207,11 @@ def test_workflow_endpoints_do_not_block_the_event_loop(path, body, monkeypatch)
     assert measured["slow"].status_code == 200
     # 루프가 막히면 이 요청은 느린 요청(0.6초)이 끝난 뒤에야 처리된다
     assert measured["fast_sec"] < 0.4, f"다른 요청이 {measured['fast_sec']:.2f}초 뒤에야 처리됐다"
+
+
+def test_f5_needs_review_counts_as_auto_success():
+    """F-5 가 사람 확인으로 끝난 회차는 기대 결과이므로 성공 칸이다(2026-11-09)."""
+    f5 = workflows._trial_cell({"fault_type": "F-5", "status": "NEEDS_REVIEW", "mttd_ms": 1000, "mttr_ms": 2000})
+    other = workflows._trial_cell({"fault_type": "F-2", "status": "NEEDS_REVIEW", "mttd_ms": 1000, "mttr_ms": 2000})
+    assert f5["result"] == "auto"
+    assert other["result"] == "review"        # 다른 유형은 종전대로 확인 필요 칸

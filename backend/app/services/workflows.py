@@ -311,7 +311,9 @@ TRIALS_PER_FAULT = 5
 #   failed    실패           분모만
 #   invalid   무효           분모 밖 — 주입 도구 오류 · 준비 실패
 #   running   진행 중        분모 밖 (아직 안 한 회차는 pending)
-_CELL_BY_STATUS = {"PASS": "auto", "AWAITING_APPROVAL": "approved", "NEEDS_REVIEW": "approved",
+# NEEDS_REVIEW 는 사람이 승인한 것이 아니라 담당자 확인으로 **넘긴** 것이다(F-5 의 PRD 기대 결과).
+# 종전에는 "승인"과 같은 칸으로 그려 F-5 가 늘 승인받은 것처럼 보였다(2026-11-09)
+_CELL_BY_STATUS = {"PASS": "auto", "AWAITING_APPROVAL": "approved", "NEEDS_REVIEW": "review",
                    "FAIL": "failed", "INVALID": "invalid", "running": "running", "queued": "pending"}
 # F-4 는 안전 전환 여부만 보는 별도 줄이다(분모 25회 밖).
 # 차단 후 승인 대기도 전환이 일어난 것이다 — healing 의 F-4 기대 결과가 "단일 probe 또는 승인 대기"다

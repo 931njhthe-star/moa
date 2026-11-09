@@ -664,6 +664,34 @@ def _known_people(session_id: str) -> list[str]:
         " WHERE session_id = %s AND removed = false AND person IS NOT NULL", (session_id,))]
 
 
+def _given_name(person: str) -> str | None:
+    """성을 뗀 이름 — "박서연" → "서연". 한글 세 글자 이름만 본다(두 글자는 떼면 한 글자라 오인이 크다)."""
+    return person[1:] if person and len(person) == 3 and _HANGUL_NAME.match(person) else None
+
+
+def _says_given_name(given: str, text: str) -> bool:
+    """문장이 성 없이 이름만 불렀는가 — "서연이는 …", "서연 님 …", "서연아 …".
+
+    앞 글자가 한글이면 다른 낱말의 일부다("박서연"은 전체 이름 비교가 이미 잡는다).
+    """
+    return re.search(rf"(?<![가-힣]){re.escape(given)}(?:이|아|야)?"
+                     rf"(?:님|씨|은|는|이|가|도|에게|한테|꺼|거|것|의)?(?![가-힣])", text or "") is not None
+
+
+def _people_in(text: str, people) -> list[str]:
+    """문장이 가리키는 사람들 — 전체 이름이 먼저, 하나도 없을 때만 성 없는 이름으로 찾는다.
+
+    단톡방에서는 "서연이는 따뜻한 걸로"처럼 이름만 부르는 일이 흔하다. 예전에는 전체 이름만 비교해
+    "어느 주문을 말하는지 찾지 못했어요"로 끝났다(2026-11-09 사용자 보고).
+    같은 이름이 둘이면 둘 다 돌려준다 — 고르는 쪽이 모호로 처리한다(임의로 정하지 않는다).
+    """
+    people = [p for p in dict.fromkeys(people) if p]
+    full = [p for p in people if p in (text or "")]
+    if full:
+        return full
+    return [p for p in people if (g := _given_name(p)) and _says_given_name(g, text)]
+
+
 def _leading_name(session_id: str, text: str) -> str | None:
     """문장 맨 앞 낱말을 이름으로 읽는다 — 메뉴 · 사양으로 읽히는 말이면 이름이 아니다.
 
@@ -698,7 +726,7 @@ def _brand_of(session_id: str) -> tuple[str | None, str | None]:
 
 def _named_stranger(session_id: str, text: str) -> str | None:
     """세션에 없는 사람 이름이 문장 맨 앞에 적혀 있는가 — 그러면 수정이 아니라 추가다."""
-    if any(p and p in text for p in _known_people(session_id)):
+    if _people_in(text, _known_people(session_id)):
         return None
     return _leading_name(session_id, text)
 
@@ -706,7 +734,7 @@ def _named_stranger(session_id: str, text: str) -> str | None:
 def chat_person(session: dict, text: str) -> str | None:
     """이 문장이 누구 주문인가 — 세션에 있는 이름이 먼저, 없으면 맨 앞 낱말."""
     session_id = session["session_id"]
-    named = [p for p in _known_people(session_id) if p and p in text]
+    named = _people_in(text, _known_people(session_id))
     if len(named) == 1:
         return named[0]
     if named:
@@ -718,8 +746,10 @@ def _without_person(text: str, person: str) -> str:
     """이름(과 붙은 조사)을 뺀 나머지 — 메뉴 매칭이 이름을 메뉴 글자로 읽지 않게."""
     words = []
     dropped = False
+    names = {person, _given_name(person)} - {None}
     for word in (text or "").split():
-        if not dropped and _NAME_PARTICLE.sub("", word) == person:
+        bare = _NAME_PARTICLE.sub("", word)
+        if not dropped and (bare in names or re.sub(r"[아야]$", "", bare) in names):
             dropped = True
             continue
         words.append(word)
@@ -819,7 +849,8 @@ def _find_target(session_id: str, text: str) -> dict | None:
     아무 행이나 고치면 담당자가 모르는 채로 틀린 주문을 공유한다.
     """
     rows = _live_rows(session_id)
-    by_person = [r for r in rows if r["person"] and r["person"] in text]
+    named = _people_in(text, [r["person"] for r in rows])
+    by_person = [r for r in rows if r["person"] in named]
     if len(by_person) == 1:
         return by_person[0]
     if by_person:
@@ -856,13 +887,18 @@ def _narrow(rows: list[dict], text: str) -> list[dict]:
 
 def _cups_of_named_person(session_id: str, text: str) -> list[dict]:
     """문장이 가리킨 사람의 잔이 둘 이상일 때 그 목록. 아니면 빈 목록."""
-    rows = [r for r in _live_rows(session_id) if r["person"] and r["person"] in text]
-    return rows if len(rows) > 1 else []
+    live = _live_rows(session_id)
+    named = _people_in(text, [r["person"] for r in live])
+    rows = [r for r in live if r["person"] in named]
+    # 같은 이름이 둘이면 한 사람의 잔 목록이 아니다
+    return rows if len(rows) > 1 and len(set(named)) == 1 else []
 
 
 def _apply_text_change(cur, session, before: dict, text: str) -> bool:
     """문장에서 읽은 옵션 · 메뉴를 반영한다. 반영한 것이 없으면 False."""
     brand_id, menu_version = session["brand_id"], session["menu_version"]
+    # 이름(성 없는 이름 포함)을 떼고 읽는다 — "서연이는"이 메뉴 글자로 섞이지 않게
+    text = _without_person(text, before["person"]) if before.get("person") else text
     options = intake._options(text)
     applied = False
 

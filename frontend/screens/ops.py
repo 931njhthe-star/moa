@@ -433,7 +433,7 @@ _TARGET_LABELS = {
 # `quick` 은 화면 선택지에서 내렸다. 지난 기록 · 결과보고서가 읽히도록 라벨만 남긴다 (v0.3 7절)
 _MODE_LABELS = {"quick": "직접 설정 · 선택 장애 1회",
                 "custom": "직접 설정 · 선택 장애 1~10회",
-                "full": "전체 복구 측정 · 25회 (F-4 제외)"}
+                "full": "전체 복구 측정 · 30회 (F-1 ~ F-6)"}
 _STATUS_LABELS = {
     "queued": "대기 중", "preflight": "환경 확인 중", "running": "실행 중",
     "stop_requested": "중지 처리 중", "cleaning": "장애 정리 중",

@@ -27,6 +27,9 @@ FAULT_LABELS = {
     "F-5": "출력 검증·재생성", "F-6": "메뉴 캐시 폴백",
 }
 RECOVERABLE = ("F-1", "F-2", "F-3", "F-5", "F-6")
+# 무인 복구율(사람 없이 복구) 집계 대상 — F-4 도 넣는다(2026-11-09 팀 결정, PRD 개정 전 코드 선반영).
+# F-4 는 차단 → cooldown → 단일 probe 성공으로 끝나면 사람 없이 복구한 것이다. 승인 대기로 끝나면 승인 칸
+GRID_FAULTS = ("F-1", "F-2", "F-3", "F-4", "F-5", "F-6")
 ACTIVE_RUN_STATUSES = ("queued", "preflight", "running", "stop_requested", "cleaning")
 
 
@@ -193,7 +196,7 @@ def build_cases(*, mode: str, fault_type: str, target: str | None,
         repetitions = 1
     if mode == "full":
         cases = []
-        for code in RECOVERABLE:
+        for code in GRID_FAULTS:
             for ix in range(5):
                 default_target, _ = FAULT_DEFAULTS[code]
                 case_target = (f"moa-{'a' if ix % 2 == 0 else 'b'}-backend-1"
@@ -221,7 +224,7 @@ def create_run(*, mode: str, fault_type: str, target: str | None,
         raise PermissionError("장애 시험은 ENVIRONMENT=lab에서만 실행할 수 있습니다")
     cases = build_cases(mode=mode, fault_type=fault_type, target=target,
                         repetitions=repetitions, injection_seconds=injection_seconds)
-    if (mode != "full" and len(cases) > MAX_STEPS) or (mode == "full" and len(cases) != 25):
+    if (mode != "full" and len(cases) > MAX_STEPS) or (mode == "full" and len(cases) != 5 * len(GRID_FAULTS)):
         raise ValueError("workflow 단계 상한을 초과했습니다")
     check = preflight(mode=mode, fault_type=fault_type, target=target)
     if not check["ready"]:
@@ -235,7 +238,7 @@ def create_run(*, mode: str, fault_type: str, target: str | None,
                 " idempotency_key, preflight) "
                 "VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb) "
                 "ON CONFLICT (idempotency_key) DO NOTHING RETURNING run_id",
-                (run_id, mode, fault_type if mode != "full" else "full-25", config.ENVIRONMENT,
+                (run_id, mode, fault_type if mode != "full" else f"full-{len(cases)}", config.ENVIRONMENT,
                  json.dumps(cases), len(cases), idempotency_key, json.dumps(check)))
             row = cur.fetchone()
             if row is None and idempotency_key:
@@ -315,10 +318,8 @@ TRIALS_PER_FAULT = 5
 # 종전에는 "승인"과 같은 칸으로 그려 F-5 가 늘 승인받은 것처럼 보였다(2026-11-09)
 _CELL_BY_STATUS = {"PASS": "auto", "AWAITING_APPROVAL": "approved", "NEEDS_REVIEW": "review",
                    "FAIL": "failed", "INVALID": "invalid", "running": "running", "queued": "pending"}
-# F-4 는 안전 전환 여부만 보는 별도 줄이다(분모 25회 밖).
-# 차단 후 승인 대기도 전환이 일어난 것이다 — healing 의 F-4 기대 결과가 "단일 probe 또는 승인 대기"다
-_F4_CELL_BY_STATUS = {"PASS": "switched", "AWAITING_APPROVAL": "switched",
-                      "FAIL": "not_switched", "NEEDS_REVIEW": "not_switched"}
+# F-4 는 종전에 안전 전환 여부만 보는 별도 줄(분모 밖)이었다. 2026-11-09 부터 다른 유형과 같은
+# 칸 규칙으로 무인 복구율에 넣는다 — probe 성공(PASS)은 자동, 승인 대기는 승인 칸
 
 
 def _trial_cell(row: dict) -> dict:
@@ -344,7 +345,7 @@ def trials_grid(per_fault: int = TRIALS_PER_FAULT) -> dict:
     """유형별 최신 N회차 격자. 모양은 `{"total_runs", "rows": [{"fault", "cells"}], "f4"}`.
 
     기록이 아예 없으면 `rows` 를 비워 둔다 — ops_view 가 그때 "아직 없음" 안내를 띄운다.
-    하나라도 있으면 복구 대상 5종의 줄을 모두 둔다. 격자에 구멍이 나면 보는 사람이
+    하나라도 있으면 집계 대상 6종(F-1 ~ F-6)의 줄을 모두 둔다. 격자에 구멍이 나면 보는 사람이
     "아직 안 한 유형"과 "줄이 빠진 유형"을 구분할 수 없다.
     """
     rows = db.fetch_all(
@@ -355,19 +356,16 @@ def trials_grid(per_fault: int = TRIALS_PER_FAULT) -> dict:
         "                   i.run_id DESC, i.iteration_no DESC) AS rn"
         "   FROM healing.workflow_iteration i) t"
         " WHERE rn <= %s ORDER BY fault_type, rn DESC", (per_fault,), role="healing")
-    total_runs = per_fault * len(RECOVERABLE)
+    total_runs = per_fault * len(GRID_FAULTS)
     if not rows:
         return {"total_runs": total_runs, "rows": [], "f4": None, "latest_run": None}
     by_fault: dict[str, list[dict]] = {}
     for row in rows:
         by_fault.setdefault(row["fault_type"], []).append(row)
     grid = [{"fault": fault, "cells": [_trial_cell(r) for r in by_fault.get(fault, [])]}
-            for fault in RECOVERABLE]
-    f4_rows = by_fault.get("F-4") or []
-    f4 = {"fault": "F-4",
-          "cells": [{"result": _F4_CELL_BY_STATUS.get(r.get("status"), "pending")} for r in f4_rows]}
-    return {"total_runs": total_runs, "rows": grid, "f4": f4 if f4_rows else None,
-            "latest_run": _latest_run()}
+            for fault in GRID_FAULTS]
+    # "f4" 별도 줄은 더 내지 않는다(F-4 가 rows 에 들어갔다). 키는 화면 호환을 위해 None 으로 둔다
+    return {"total_runs": total_runs, "rows": grid, "f4": None, "latest_run": _latest_run()}
 
 
 def _latest_run() -> dict | None:

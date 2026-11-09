@@ -315,3 +315,16 @@ def test_needs_review_cell_is_not_drawn_as_approval():
     assert (s["ok"], s["valid"]) == (1, 2)
     html = ov._trial_cell({"result": "review"}, "F-5")
     assert copy.OD_CELL_REVIEW in html and copy.OD_CELL_APPROVED not in html
+
+
+def test_f4_row_counts_in_auto_rate_without_mttr_over_mark():
+    """F-4 가 일반 줄로 오면 무인 복구율에 들어가고, 60초 차단을 거치므로 초과 표시를 하지 않는다(2026-11-09)."""
+    trials = {"total_runs": 30, "f4": None, "rows": [
+        {"fault": "F-1", "cells": [{"result": "auto", "sec": 40}]},
+        {"fault": "F-4", "cells": [{"result": "auto", "sec": 75}, {"result": "approved", "sec": None}]},
+    ]}
+    s = ov.trial_summary(trials)
+    assert (s["ok"], s["valid"]) == (2, 3)
+    assert s["max_sec"] == 40               # F-4 의 75초는 SC-3 최대값에 넣지 않는다
+    html = ov.trials_html(s)
+    assert "moa-tc-over" not in html

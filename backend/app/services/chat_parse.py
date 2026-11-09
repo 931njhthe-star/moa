@@ -86,6 +86,13 @@ def parse(raw_text: str) -> dict:
         })
 
     if not messages and unreadable:
+        # 카카오톡 모바일 · 메신저 복사본처럼 이름이 **제 줄에 따로** 있는 형식 — "김민수\n아아 톨 2잔"
+        # (2026-11-09 사용자 보고: 16줄이 전부 `이름 없음` 메시지로 들어가 이름 줄이 주문으로 읽혔다)
+        stacked = _parse_name_lines(unreadable)
+        if stacked:
+            messages, unreadable = stacked
+
+    if not messages and unreadable:
         # 이름이 한 줄도 없다 — 거부하지 않고 `이름 없음` 한 사람의 대화로 받는다
         messages = [{"message_id": f"m{n}", "order": n, "seq": n,
                      "sender": UNNAMED, "text": line["text"]}
@@ -108,9 +115,74 @@ def parse(raw_text: str) -> dict:
     }
 
 
+# 제 줄에 따로 있는 이름 — 한글 2~4자 또는 영문 이름. "좋아요" 같은 짧은 대답을 이름으로 잡지 않도록
+# `요`로 끝나는 줄은 뺀다
+_NAME_LINE = re.compile(r"^(?:[가-힣]{2,4}|[A-Za-z][A-Za-z.]{1,15})$")
+
+
+# 디스코드 복사본의 머리줄 — "이름 — 오전 10:23" · "이름 — 오늘 오후 2:31" · "이름 — 2026. 11. 9. 오전 10:23".
+# 이름에는 공백 · 숫자 · `_` 가 들어갈 수 있다("AIO 2기_이성우"). 복사할 때 분이 잘려 "오전 10:" 로 끝나기도 한다
+# (2026-11-09 사용자 요청: 디스코드 형식 포함)
+_DISCORD_HEAD = re.compile(
+    r"^(?P<name>.+?)\s+[—–-]\s+"
+    r"(?:(?:오늘|어제)\s*|\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2}\s*\.?\s*)?"
+    r"(?:오전|오후)\s*\d{1,2}:\d{0,2}$")
+
+
+def _is_name_line(text: str) -> bool:
+    return _name_of(text) is not None
+
+
+def _name_of(text: str) -> str | None:
+    """이름 줄이면 이름을, 아니면 None 을 돌려준다 — 이름만 있는 줄과 디스코드 머리줄을 받는다."""
+    head = _DISCORD_HEAD.match(text)
+    if head:
+        return head.group("name").strip() or None
+    if _NAME_LINE.match(text) and not text.endswith("요"):
+        return text
+    return None
+
+
+def _parse_name_lines(lines: list[dict]) -> tuple[list[dict], list[dict]] | None:
+    """이름 줄 다음에 메시지 줄이 오는 형식을 읽는다. 첫 줄이 이름 줄이 아니면 None(이 형식이 아니다).
+
+    이름 줄은 이름만 있는 줄(카카오톡 모바일 등)과 디스코드 머리줄("이름 — 오전 10:23") 두 가지다.
+
+    이름 줄 바로 다음 줄은 이름처럼 생겨도 메시지다("최유나\n민트초코"). 이름 줄 없이 이어지는 줄은
+    앞 사람의 메시지로 붙이되, **대화 맨 끝의 이어진 줄**은 읽지 못한 줄로 둔다 — 매장 요청 한 줄
+    ("스타벅스로 갈 예정이야")이 마지막 사람의 주문으로 섞이지 않게 하려는 것이다(PRD 2.4.1).
+    """
+    if len(lines) < 2 or not _is_name_line(lines[0]["text"]):
+        return None
+    messages, unreadable = [], []
+    sender, i = None, 0
+    while i < len(lines):
+        text = lines[i]["text"]
+        if _DISCORD_HEAD.match(text) and i + 1 < len(lines) and _DISCORD_HEAD.match(lines[i + 1]["text"]):
+            i += 1      # 본문 없는 머리줄(사진만 올린 메시지 등) — 다음 머리줄을 본문으로 먹지 않는다
+            continue
+        if _is_name_line(text) and i + 1 < len(lines):
+            sender, body = _name_of(text), _KAKAO_TIME.sub("", lines[i + 1]["text"])
+            i += 2
+        elif i == len(lines) - 1:
+            unreadable.append(lines[i])
+            break
+        else:
+            body = _KAKAO_TIME.sub("", text)
+            i += 1
+        if not body:
+            continue
+        n = len(messages) + 1
+        messages.append({"message_id": f"m{n}", "order": n, "seq": n, "sender": sender, "text": body})
+    return (messages, unreadable) if messages else None
+
+
 def _split(line: str) -> tuple[str | None, str]:
     """`[이름] 메시지` · `이름: 메시지` 두 형식을 받는다."""
     if line.startswith("[") and "]" in line:
+        if _KAKAO_TIME.match(line):
+            # "[오전 10:24]다음 메시지" — 디스코드에서 같은 사람이 이어 보낸 줄. 시각을 이름으로 읽지 않는다
+            return None, line
         sender, _, text = line[1:].partition("]")
         sender, text = sender.strip(), _KAKAO_TIME.sub("", text.strip())
         if sender and text:

@@ -569,6 +569,7 @@ def _render_preflight(check: dict) -> None:
         "A frontend": ("앱 A 화면 서비스", "앱 A frontend 상태를 확인하세요."),
         "B frontend": ("앱 B 화면 서비스", "앱 B frontend 상태를 확인하세요."),
         "F-3 allowlisted target": ("F-3 대상 권한", "선택한 backend가 허용목록에 있는지 확인하세요."),
+        "남은 장애 주입": ("해제되지 않은 장애 주입", "남은 주입을 해제한 뒤 다시 점검하세요."),
     }
     rows = []
     for item in checks:

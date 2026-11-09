@@ -27,6 +27,7 @@ FAULT_LABELS = {
     "F-5": "출력 검증·재생성", "F-6": "메뉴 캐시 폴백",
 }
 RECOVERABLE = ("F-1", "F-2", "F-3", "F-5", "F-6")
+ACTIVE_RUN_STATUSES = ("queued", "preflight", "running", "stop_requested", "cleaning")
 
 
 def templates() -> list[dict]:
@@ -37,15 +38,78 @@ def templates() -> list[dict]:
             for code, label in FAULT_LABELS.items()]
 
 
+def _json(response) -> dict:
+    try:
+        body = response.json()
+        return body if isinstance(body, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _why_interpreter(response) -> str:
+    """해석기 /health 가 200 이 아닌 이유. 503 은 **주입된 error 모드일 때만** 난다(interpreter/main.py)."""
+    mode = _json(response).get("mode")
+    if mode == "error":
+        return "HTTP 503 · 장애 주입(error 모드)이 남아 있음 → 장애 도구줄 [해제] 후 다시 점검"
+    return f"HTTP {response.status_code} · 해석기 로그 확인"
+
+
+def _why_backend(response) -> str:
+    """backend /ready 가 503 인 이유 — DB 연결과 메뉴 사전 적재 중 어느 쪽인가."""
+    checks = _json(response).get("checks") or {}
+    if checks and not checks.get("db"):
+        return f"HTTP {response.status_code} · DB 연결 실패 ({checks.get('db_text') or '-'})"
+    if checks and not checks.get("menu_preload"):
+        return (f"HTTP {response.status_code} · 메뉴 사전 적재 실패 "
+                f"({checks.get('menu_preload_error') or '-'}) → 메뉴 시드 확인")
+    return f"HTTP {response.status_code}"
+
+
+def _why_frontend(response) -> str:
+    if response.status_code == 503:
+        # HAProxy 503 = 보낼 서버가 없다. 서버 상태는 각 스택 backend /ready 를 따라간다(gateway/haproxy.cfg)
+        return "HTTP 503 · Gateway 에 살아 있는 앱 스택 없음 → A/B backend 행 먼저 확인"
+    return f"HTTP {response.status_code}"
+
+
 def _http_check(name: str, url: str, timeout: float = 3.0,
-                headers: dict[str, str] | None = None) -> dict:
+                headers: dict[str, str] | None = None, explain=None) -> dict:
+    """200 이면 정상. 아니면 **원인과 해결**을 detail 에 적는다 — "HTTP 503" 만으로는 운영자가 움직일 수 없다."""
     try:
         response = httpx.get(url, timeout=timeout, headers=headers)
-        return {"name": name, "ready": response.status_code == 200,
-                "detail": "정상" if response.status_code == 200 else f"HTTP {response.status_code}"}
     except httpx.HTTPError as exc:
         return {"name": name, "ready": False,
-                "detail": f"연결할 수 없음 ({type(exc).__name__})"}
+                "detail": f"연결할 수 없음 ({type(exc).__name__}) → 컨테이너 기동 여부 확인"}
+    if response.status_code == 200:
+        return {"name": name, "ready": True, "detail": "정상"}
+    detail = explain(response) if explain else f"HTTP {response.status_code}"
+    return {"name": name, "ready": False, "detail": detail}
+
+
+def _leftover_injections() -> dict:
+    """해제되지 않은 장애 주입. 남아 있으면 해석기 /health 가 503 이고 새 시험의 측정이 오염된다."""
+    try:
+        rows = db.fetch_all(
+            "SELECT fi.fault, fi.target, fi.mode, fi.run_id, r.status AS run_status "
+            "  FROM healing.fault_injection fi "
+            "  LEFT JOIN healing.workflow_run r ON r.run_id = fi.run_id "
+            " WHERE fi.action = 'inject' AND fi.cleared_at IS NULL ORDER BY fi.injected_at",
+            role="healing")
+    except (db.DbUnavailable, psycopg.Error) as exc:
+        return {"name": "남은 장애 주입", "ready": False,
+                "detail": f"주입 상태 확인 실패 ({type(exc).__name__})"}
+    if not rows:
+        return {"name": "남은 장애 주입", "ready": True, "detail": "없음"}
+    listed = ", ".join(f"{r['fault']}→{r['target']}({r['mode']})" for r in rows[:3])
+    more = f" 외 {len(rows) - 3}건" if len(rows) > 3 else ""
+    if any(r["run_id"] is None for r in rows):
+        how = "장애 도구줄 [해제] 후 다시 점검"
+    elif any(r["run_status"] in ACTIVE_RUN_STATUSES for r in rows):
+        how = "진행 중인 복구 시험이 끝난 뒤 다시 점검"
+    else:
+        # 끝난 시험이 정리하지 못한 주입 — healing worker 가 다음 순회에 닫는다(_clear_orphan_injections)
+        how = "끝난 시험의 정리 누락 · healing worker 가 몇 초 안에 정리 → 다시 점검 (계속 남으면 healing 로그 확인)"
+    return {"name": "남은 장애 주입", "ready": False, "detail": f"{listed}{more} → {how}"}
 
 
 def preflight(*, mode: str = "quick", fault_type: str = "F-1", target: str | None = None) -> dict:
@@ -80,6 +144,7 @@ def preflight(*, mode: str = "quick", fault_type: str = "F-1", target: str | Non
             checks.append({"name": "workflow 스키마", "ready": False,
                            "detail": f"스키마/worker 상태 확인 실패 ({type(exc).__name__})"})
             allowlist = []
+        checks.append(_leftover_injections())
     else:
         checks.extend([
             {"name": "DB 연결", "ready": False, "detail": "DATABASE_URL 미설정"},
@@ -93,18 +158,19 @@ def preflight(*, mode: str = "quick", fault_type: str = "F-1", target: str | Non
     for role in ("primary", "backup"):
         url = {"primary": config.ORDER_INTERPRETER_PRIMARY_URL,
                "backup": config.ORDER_INTERPRETER_BACKUP_URL}[role]
-        checks.append(_http_check(f"interpreter {role}", f"{url}/health") if url else
+        checks.append(_http_check(f"interpreter {role}", f"{url}/health", explain=_why_interpreter) if url else
                       {"name": f"interpreter {role}", "ready": False, "detail": "주소 미설정"})
 
     for letter in ("a", "b"):
         name = f"moa-{letter}-backend-1"
-        checks.append(_http_check(f"{letter.upper()} backend", f"http://{name}:8000/ready"))
+        checks.append(_http_check(f"{letter.upper()} backend", f"http://{name}:8000/ready",
+                                  explain=_why_backend))
         # Frontends intentionally stay on their isolated A/B networks, so the
         # ops backend cannot resolve their container DNS names. Probe each one
         # through the shared Gateway using its sticky routing cookie instead.
         checks.append(_http_check(
             f"{letter.upper()} frontend", "http://gateway:8501/_stcore/health",
-            headers={"Cookie": f"MOA_STACK={letter}"},
+            headers={"Cookie": f"MOA_STACK={letter}"}, explain=_why_frontend,
         ))
     if fault_type == "F-3" and target:
         checks.append({"name": "F-3 allowlisted target", "ready": target in allowlist,

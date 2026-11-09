@@ -637,7 +637,12 @@ def _run(run: dict) -> None:
                 _log_failure("workflow iteration failed run_id=%s iteration=%s", run_id, no)
             _record_verification(result)
             iteration_status = "PASS" if result.get("passed") else "FAIL"
-            if result.get("detail") == "NEEDS_REVIEW":
+            # F-5 의 기대 결과는 "최대 3회 생성·검증 → 필요 시 NEEDS_REVIEW" 다. 그렇게 끝났으면
+            # 기대대로 동작한 것이므로 성공(PASS)으로 센다(2026-11-09 팀 결정). 다른 유형의
+            # NEEDS_REVIEW 는 종전대로 확인 필요 칸에 둔다
+            if result.get("detail") == "NEEDS_REVIEW" and fault == "F-5" and result.get("passed"):
+                iteration_status = "PASS"
+            elif result.get("detail") == "NEEDS_REVIEW":
                 iteration_status = "NEEDS_REVIEW"
             elif ("approval" in (result.get("detail") or "").lower()
                   or "승인 대기" in (result.get("detail") or "")):

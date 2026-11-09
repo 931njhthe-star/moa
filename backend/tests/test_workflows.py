@@ -104,8 +104,9 @@ def test_trials_grid_maps_each_status_to_its_dashboard_cell(monkeypatch):
     by_fault = {row["fault"]: row for row in grid["rows"]}
 
     assert [c["result"] for c in by_fault["F-1"]["cells"]] == ["auto", "failed"]
-    # 사람 개입(승인 대기 · 확인 필요)은 "승인 · 수동" 칸이다 — 분모에 남고 분자에서 빠진다(PRD 565행)
-    assert [c["result"] for c in by_fault["F-2"]["cells"]] == ["approved", "approved"]
+    # 사람 개입은 분모에 남고 분자에서 빠진다(PRD 565행). 승인 대기는 "승인", 확인 필요(NEEDS_REVIEW)는
+    # 사람이 승인한 것이 아니므로 "확인 필요" 칸으로 따로 그린다(2026-11-09 — F-5 가 늘 "승인"으로 보였다)
+    assert sorted(c["result"] for c in by_fault["F-2"]["cells"]) == ["approved", "review"]
     assert [c["result"] for c in by_fault["F-3"]["cells"]] == ["invalid", "running", "pending"]
 
 

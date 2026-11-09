@@ -287,7 +287,7 @@ def trial_summary(trials: dict | None) -> dict | None:
     for row in trials["rows"]:
         cells = row.get("cells") or []
         ok = sum(1 for x in cells if x.get("result") == "auto")
-        valid = sum(1 for x in cells if x.get("result") in ("auto", "approved", "failed"))
+        valid = sum(1 for x in cells if x.get("result") in ("auto", "approved", "review", "failed"))
         done += sum(1 for x in cells if x.get("result") not in ("pending", None))
         secs += [x["sec"] for x in cells if x.get("result") == "auto" and x.get("sec") is not None]
         ok_all, valid_all = ok_all + ok, valid_all + valid
@@ -312,7 +312,7 @@ def _trial_cell(cell: dict, fault: str) -> str:
         over = sec is not None and sec > MTTR_TARGET_BY_FAULT.get(fault, MTTR_TARGET_SEC)
         body = f'<b>{int(sec)}</b>' if over else (str(int(sec)) if sec is not None else "")
         return f'<span class="moa-tc moa-tc-auto{" moa-tc-over" if over else ""}">{body}</span>'
-    text = {"approved": copy.OD_CELL_APPROVED, "failed": copy.OD_CELL_FAILED, "invalid": copy.OD_CELL_INVALID,
+    text = {"approved": copy.OD_CELL_APPROVED, "review": copy.OD_CELL_REVIEW, "failed": copy.OD_CELL_FAILED, "invalid": copy.OD_CELL_INVALID,
             "running": copy.OD_CELL_RUNNING, "switched": copy.OD_CELL_SWITCHED,
             "not_switched": copy.OD_CELL_NOT_SWITCHED}.get(result, copy.OD_CELL_PENDING)
     return f'<span class="moa-tc moa-tc-{c.esc(result)}">{c.esc(text)}</span>'

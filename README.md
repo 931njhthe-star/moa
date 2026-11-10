@@ -23,24 +23,7 @@ A separate **Auto-Healing system** detects and helps recover from service failur
 
 ## Multi-Agent Order Processing
 
-```text
-Group-chat order input
-    ↓
-Orchestrator (LangGraph · rule-based execution)
-    ↓
-Intake Agent ── Extract add / cancel / update intents
-    ↓
-Menu Agent ─── Match menu names and options
-                (rules first, LLM/tools when needed)
-    ↓
-Rule Validation ── Link changes and cancellations,
-                   check quantities and options
-    ↓
-Settlement + Review Agent ── Apply order updates,
-                             calculate prices, review ambiguities
-    ↓
-Final Consolidated Order Sheet
-```
+![MOA multi-agent order processing flow](assets/moa-agent-flow-en.svg)
 
 **Design principle: separate LLM interpretation from deterministic decisions.** LLMs handle natural-language understanding and candidate suggestions; menu confirmation, price calculation, and validation are controlled by rules. Checkpoints preserve processing state so interrupted tasks can resume.
 

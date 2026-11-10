@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1050" viewBox="0 0 1280 1050" role="img" aria-labelledby="title desc">
+<title id="title">MOA · Multi-Agent Order Processing</title><desc id="desc">Group chat orders pass through orchestration, intent extraction, menu matching, validation and review to produce a consolidated order.</desc>
+<rect width="1280" height="1050" fill="#f9fbf8"/>
+<text x="70" y="67" font-family="Arial,'Noto Sans KR',sans-serif" fill="#122d1c" font-size="38" font-weight="700">MOA · Multi-Agent Order Processing</text>
+<text x="70" y="102" font-family="Arial,'Noto Sans KR',sans-serif" fill="#5a6e60" font-size="21">From group chat to a consolidated order sheet</text>
+<rect x="74" y="130" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="177" r="24" fill="#e2f1e3"/>
+<text x="117" y="185" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">✉</text>
+<text x="160" y="187" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Group Chat Input</text>
+<rect x="605" y="136" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="185" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Paste orders, changes and cancellations from group chat.</text>
+<path d="M319 228 V241" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 233 L319 244 L328 233" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="260" width="490" height="95" rx="20" fill="#e4f2e5" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="307" r="24" fill="#e2f1e3"/>
+<text x="117" y="315" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">↳</text>
+<text x="160" y="317" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Orchestrator</text>
+<rect x="605" y="266" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="315" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">LangGraph coordinates a rule-driven execution sequence.</text>
+<path d="M319 358 V371" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 363 L319 374 L328 363" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="390" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="437" r="24" fill="#e2f1e3"/>
+<text x="117" y="445" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">1</text>
+<text x="160" y="447" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Intake Agent</text>
+<rect x="605" y="396" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="445" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Extract add, cancel and update intents from messages.</text>
+<path d="M319 488 V501" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 493 L319 504 L328 493" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="520" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="567" r="24" fill="#e2f1e3"/>
+<text x="117" y="575" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">2</text>
+<text x="160" y="577" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Menu Agent</text>
+<rect x="605" y="526" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="575" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Match menu items and options; rules first, then LLM/tools.</text>
+<path d="M319 618 V631" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 623 L319 634 L328 623" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="650" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="697" r="24" fill="#e2f1e3"/>
+<text x="117" y="705" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">3</text>
+<text x="160" y="707" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Rule Validation</text>
+<rect x="605" y="656" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="705" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Link updates and cancellations; check quantity and options.</text>
+<path d="M319 748 V761" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 753 L319 764 L328 753" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="780" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
+<circle cx="117" cy="827" r="24" fill="#e2f1e3"/>
+<text x="117" y="835" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">4</text>
+<text x="160" y="837" fill="#163820" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Settlement + Review</text>
+<rect x="605" y="786" width="605" height="83" rx="16" fill="#f0f3f1"/>
+<text x="632" y="835" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Apply changes, calculate prices and flag ambiguities.</text>
+<path d="M319 878 V891" stroke="#247a43" stroke-width="5" stroke-linecap="round"/><path d="M310 883 L319 894 L328 883" fill="none" stroke="#247a43" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="74" y="910" width="490" height="95" rx="20" fill="#145c39" stroke="#145c39" stroke-width="2"/>
+<circle cx="117" cy="957" r="24" fill="#b3e8ba"/>
+<text x="117" y="965" fill="#1f7439" font-size="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700">✓</text>
+<text x="160" y="967" fill="#ffffff" font-size="27" font-family="Arial,'Noto Sans KR',sans-serif" font-weight="700">Final Order Sheet</text>
+<rect x="605" y="916" width="605" height="83" rx="16" fill="#e6f3e8"/>
+<text x="632" y="965" fill="#2b4132" font-size="20" font-family="Arial,'Noto Sans KR',sans-serif">Generate one validated, consolidated order sheet.</text>
+
+</svg>

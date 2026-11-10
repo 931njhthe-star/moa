@@ -23,23 +23,23 @@ A separate **Auto-Healing system** detects and helps recover from service failur
 
 ## Multi-Agent Order Processing
 
-```mermaid
-flowchart TD
-    A["Group-chat input"] --> B["Orchestrator<br/>LangGraph · rule-driven sequence"]
-    B --> C["01 · Intake Agent<br/>Add / cancel / update intents"]
-    C --> D["02 · Menu Agent<br/>Menu and option matching<br/>Rules first · LLM/tools if needed"]
-    D --> E["Rule Validation<br/>Link changes and cancellations<br/>Check quantities and options"]
-    E --> F["03 · Settlement + Review<br/>Apply updates · Calculate prices<br/>Flag ambiguous items"]
-    F --> G["Consolidated Order Sheet"]
-
-    classDef input fill:#f1f8ed,stroke:#87b66c,color:#203b25,stroke-width:1.5px
-    classDef agent fill:#ffffff,stroke:#8bac83,color:#203b25,stroke-width:1.5px
-    classDef rules fill:#e9f3e6,stroke:#70a25c,color:#203b25,stroke-width:1.5px
-    classDef output fill:#245c39,stroke:#245c39,color:#ffffff,stroke-width:1.5px
-    class A,B input
-    class C,D,F agent
-    class E rules
-    class G output
+```text
+Group-chat order input
+    ↓
+Orchestrator (LangGraph · rule-based execution)
+    ↓
+Intake Agent ── Extract add / cancel / update intents
+    ↓
+Menu Agent ─── Match menu names and options
+                (rules first, LLM/tools when needed)
+    ↓
+Rule Validation ── Link changes and cancellations,
+                   check quantities and options
+    ↓
+Settlement + Review Agent ── Apply order updates,
+                             calculate prices, review ambiguities
+    ↓
+Final Consolidated Order Sheet
 ```
 
 **Design principle: separate LLM interpretation from deterministic decisions.** LLMs handle natural-language understanding and candidate suggestions; menu confirmation, price calculation, and validation are controlled by rules. Checkpoints preserve processing state so interrupted tasks can resume.

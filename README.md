@@ -70,10 +70,10 @@ Moa는 이 두 문제를 두 개의 층으로 나눠 풉니다.
     </tr>
   </thead>
   <tbody>
-    <tr><td align="center">이성우</td><td>팀장 · 서비스 · 멀티 에이전트 (PM 겸임)</td><td>주문 정리 서비스 본체(업무 층 에이전트 · 툴 · API), 담당자 화면 · 운영 대시보드, PM 문서</td></tr>
-    <tr><td align="center">노지훈</td><td>Auto Healing</td><td>장애 감지 · 진단 · 복구 · 검증 워크플로(healing), 고장 주입기, 사건 기록 · 지표</td></tr>
-    <tr><td align="center">강민우</td><td>CI · QA</td><td>테스트 작성, 자동 테스트 파이프라인(GitHub Actions), 품질 측정, 정답 데이터</td></tr>
-    <tr><td align="center">이홍진</td><td>CD · 배포</td><td>컨테이너 구성(공용 스택 + 앱 A/B · HAProxy 게이트웨이), 클라우드(EC2) 배포, 시스템 구성 문서</td></tr>
+    <tr><td align="center">이성우</td><td>팀장 · PM<br>서비스 · 멀티 에이전트</td><td>주문 정리 서비스 본체(업무 층 에이전트 · 툴 · API), 사용자 화면 · 운영 대시보드, PM 문서</td></tr>
+    <tr><td align="center">노지훈</td><td>Auto Healing</td><td>장애 감지 · 진단 · 복구 · 검증 워크플로, 고장 주입기, 사건 기록 · 지표</td></tr>
+    <tr><td align="center">강민우</td><td>QA</td><td>테스트 작성, 품질 측정 · 정답 데이터, 배포 차단 · Issue 자동 할당 실증</td></tr>
+    <tr><td align="center">이홍진</td><td>CI / CD</td><td>자동 테스트 파이프라인(GitHub Actions), 컨테이너 구성(공용 스택 + 앱 A/B · HAProxy 게이트웨이), AWS 클라우드(EC2) 배포</td></tr>
     <tr><td align="center">백승주</td><td>측정 · 검증</td><td>장애 주입 · 측정 · 독립 검증, 데모 총괄 · 제출 책임, CI · 시연 영상 · 발표자료 보조</td></tr>
   </tbody>
 </table>
@@ -832,7 +832,7 @@ SSH 사용자는 기본 `ubuntu` 입니다. 다른 사용자면 Secrets 가 아�
   <tbody>
     <tr>
       <td align="center">이성우</td>
-      <td>팀장 · 서비스 · 멀티 에이전트</td>
+      <td>팀장 · PM<br>서비스 · 멀티 에이전트</td>
       <td>· 멀티 에이전트 구조와 역할을 더 깊이 공부하기<br>· 실패 사례를 교훈 삼아 다음에는 더 잘하기<br>· 역할 분리와 WBS 이슈화<br>· 코드 프리징 이후에도 추가 수정이 이어졌고, 마지막 날 결함 수정과 발표 준비를 함께 해야 했다 — 미리미리 해 두는 습관이 필요하다<br>· 일정에 20 ~ 30% 여유를 잡기<br>· 산출물을 미리 검증 · 검토하기</td>
     </tr>
     <tr>
@@ -842,12 +842,12 @@ SSH 사용자는 기본 `ubuntu` 입니다. 다른 사용자면 Secrets 가 아�
     </tr>
     <tr>
       <td align="center">강민우</td>
-      <td>CI · QA</td>
+      <td>QA</td>
       <td>· 막힌 부분은 바로바로 물어보기<br>· AI를 너무 믿지 말기<br>· 다음 프로젝트에서는 맡은 역할을 먼저 확인해 시간 분배를 잘하기<br>· AI가 만들어 준 결과물을 제대로 검토하기</td>
     </tr>
     <tr>
       <td align="center">이홍진</td>
-      <td>CD · 배포</td>
+      <td>CI / CD</td>
       <td>· 해내지 못할 일은 없다는 마음가짐<br>· AI가 내놓은 산출물을 그대로 믿지 않기 — 꼼꼼한 검증이 필요하다</td>
     </tr>
     <tr>

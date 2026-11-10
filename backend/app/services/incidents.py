@@ -310,6 +310,7 @@ def metrics_view() -> dict:
         "false_positive_rate": _num(row.get("false_positive_rate")),
         "avg_attempts": _num(row.get("avg_attempts")),
         "incident_count": int(row.get("incident_count") or 0),
+        **_integrity_counts(),
     }
     return {
         # 0% 와 "측정값 없음"을 구분한다 — 뷰가 0건일 때 NULL 을 돌려주는 이유다
@@ -321,6 +322,27 @@ def metrics_view() -> dict:
         ],
         "detail": detail,
     }
+
+
+def _integrity_counts() -> dict:
+    """SC-5 주문 중복 · 유실 — 복구 시험 회차가 남긴 비교 결과의 합 (healing/integrity.py).
+
+    비교한 회차가 하나도 없으면 None 이다. 화면은 None 을 `미측정`으로, 0 을 `0건`으로 그린다 —
+    재지 않은 것을 0건으로 보이게 하지 않는다.
+    """
+    try:
+        row = db.fetch_one(
+            "SELECT COUNT(*) AS runs, "
+            "       SUM((result->'integrity'->>'issues')::int) AS issues, "
+            "       SUM((result->'integrity'->>'compared')::int) AS sessions "
+            "  FROM healing.workflow_iteration "
+            " WHERE (result->'integrity'->>'measured')::boolean IS TRUE", role="healing") or {}
+    except (db.DbUnavailable, psycopg.Error):
+        row = {}
+    if not row.get("runs"):
+        return {"integrity_issue_count": None, "integrity_runs": 0, "integrity_sessions": None}
+    return {"integrity_issue_count": int(row["issues"] or 0), "integrity_runs": int(row["runs"]),
+            "integrity_sessions": int(row["sessions"] or 0)}
 
 
 # --- O-6 주문 처리 기록 -------------------------------------------------------

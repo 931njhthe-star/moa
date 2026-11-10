@@ -19,6 +19,8 @@ from moa import components as c, copy, icons
 MTTD_TARGET_SEC = 15
 MTTR_TARGET_SEC = 60
 MTTR_TARGET_BY_FAULT = {"F-3": 90}
+# SC-3 MTTR 목표가 없는 유형 — F-4 는 60초 차단(cooldown)을 거치므로 60초 목표로 재면 늘 초과로 보인다
+NO_MTTR_TARGET = frozenset({"F-4"})
 AUTO_RATE_TARGET = 80
 INTEGRITY_TARGET = 0
 PROBE_NEED_DEFAULT = 3
@@ -187,7 +189,8 @@ def kpis(metrics: dict, trial_sum: dict | None) -> list[dict]:
              _verdict(mttr, mttr is not None and mttr <= MTTR_TARGET_SEC)),
         card("auto", f"{ok}/{valid}" if valid else None, None, f"({pct}%)" if pct is not None else None,
              _verdict(pct, pct is not None and pct >= AUTO_RATE_TARGET)),
-        card("integrity", _int_text(integrity), "건", None,
+        card("integrity", _int_text(integrity), "건",
+             f"시험 {detail['integrity_runs']}회 비교" if integrity is not None and detail.get("integrity_runs") else None,
              _verdict(integrity, integrity is not None and integrity <= INTEGRITY_TARGET)),
     ]
 
@@ -286,9 +289,10 @@ def trial_summary(trials: dict | None) -> dict | None:
     for row in trials["rows"]:
         cells = row.get("cells") or []
         ok = sum(1 for x in cells if x.get("result") == "auto")
-        valid = sum(1 for x in cells if x.get("result") in ("auto", "approved", "failed"))
+        valid = sum(1 for x in cells if x.get("result") in ("auto", "approved", "review", "failed"))
         done += sum(1 for x in cells if x.get("result") not in ("pending", None))
-        secs += [x["sec"] for x in cells if x.get("result") == "auto" and x.get("sec") is not None]
+        if row.get("fault") not in NO_MTTR_TARGET:
+            secs += [x["sec"] for x in cells if x.get("result") == "auto" and x.get("sec") is not None]
         ok_all, valid_all = ok_all + ok, valid_all + valid
         rows.append({**row, "ok": ok, "valid": valid})
     f4 = trials.get("f4")
@@ -308,10 +312,11 @@ def _trial_cell(cell: dict, fault: str) -> str:
     result = cell.get("result") or "pending"
     sec = cell.get("sec")
     if result == "auto":
-        over = sec is not None and sec > MTTR_TARGET_BY_FAULT.get(fault, MTTR_TARGET_SEC)
+        over = (fault not in NO_MTTR_TARGET and sec is not None
+                and sec > MTTR_TARGET_BY_FAULT.get(fault, MTTR_TARGET_SEC))
         body = f'<b>{int(sec)}</b>' if over else (str(int(sec)) if sec is not None else "")
         return f'<span class="moa-tc moa-tc-auto{" moa-tc-over" if over else ""}">{body}</span>'
-    text = {"approved": copy.OD_CELL_APPROVED, "failed": copy.OD_CELL_FAILED, "invalid": copy.OD_CELL_INVALID,
+    text = {"approved": copy.OD_CELL_APPROVED, "review": copy.OD_CELL_REVIEW, "failed": copy.OD_CELL_FAILED, "invalid": copy.OD_CELL_INVALID,
             "running": copy.OD_CELL_RUNNING, "switched": copy.OD_CELL_SWITCHED,
             "not_switched": copy.OD_CELL_NOT_SWITCHED}.get(result, copy.OD_CELL_PENDING)
     return f'<span class="moa-tc moa-tc-{c.esc(result)}">{c.esc(text)}</span>'

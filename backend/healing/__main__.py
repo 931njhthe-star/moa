@@ -15,6 +15,7 @@ from app import config, db, ids, logging_setup
 from app.contracts import TASK_CONTRACTS
 from app.interpreter_client import InterpreterError, interpret_resilient
 from app.services import incidents, menu, metrics, monitor, workflows
+from healing import integrity
 
 LOG = logging.getLogger("moa.healing")
 
@@ -101,6 +102,16 @@ def _record_verification(result: dict) -> None:
                "verdict=EXCLUDED.verdict,verified_at=NOW()",
                (incident_id, check_name, expected, actual, verification_passed,
                 "pass" if verification_passed else "fail"), role="healing")
+    order_check = result.get("integrity") or {}
+    if order_check.get("measured"):      # 비교한 세션이 있을 때만 남긴다 — 없으면 미측정 그대로
+        ok = not order_check["issues"]
+        db.execute("INSERT INTO healing.verification_result(incident_id,check_name,expected,actual,passed,verdict) "
+                   "VALUES (%s,'integrity',%s,%s,%s,%s) ON CONFLICT(incident_id,check_name) DO UPDATE SET "
+                   "expected=EXCLUDED.expected,actual=EXCLUDED.actual,passed=EXCLUDED.passed,"
+                   "verdict=EXCLUDED.verdict,verified_at=NOW()",
+                   (incident_id, "손대지 않은 주문 세션의 항목이 장애 전후 같다 (중복 · 유실 0건)",
+                    f"세션 {order_check['compared']}개 비교 · 다름 {order_check['issues']}건",
+                    ok, "pass" if ok else "fail"), role="healing")
 
 
 def _update_run(run_id: str, *, status: str | None = None, phase: str | None = None,
@@ -484,6 +495,8 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
     # 회차는 서로 독립이어야 한다 — 앞 회차가 열어 둔 회로를 물려받으면 1차를 건너뛰어
     # 실패를 관측하지 못하고 MTTD · MTTR 이 뒤바뀐다(실측 2026-11-06 F-2 · F-5)
     monitor.reset_circuits()
+    # SC-5 — 장애 전 주문 지문. 복구 뒤 같은 세션과 견준다(healing/integrity.py)
+    integrity_before = integrity.snapshot()
     injection_id = _inject(run_id, no, fault, target, mode)
     # 주입이 적용된 뒤부터 잰다 — 해석 서비스의 모드 캐시 때문에 직후 요청은 아직 정상이다
     if target.startswith("order_interpreter_"):
@@ -553,6 +566,9 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
         mttr_ms = int(max(0, recovery_verified_at - (detected_at or start)) * 1000)
         if _sleep_or_stop(run_id, max(0, seconds - (recovery_verified_at - start))):
             verdict, detail = False, "중지 요청으로 회차 종료"
+        order_check = integrity.check(integrity_before)
+        if order_check.get("measured") and order_check["issues"]:
+            verdict = False              # 복구됐어도 주문이 중복 · 유실됐으면 합격이 아니다
         expected = {
             "F-1": "오류 감지 → 반대 해석기로 전환 → 합성 요청 5건 확인",
             "F-2": "5초 초과 지연 감지 → 대체 해석기 전환 → 총 15초 이내 응답",
@@ -567,11 +583,15 @@ def _execute_case(run_id: str, no: int, case: dict) -> dict:
              "duration_ms": mttd_ms, "status": "PASS" if incident_id else "FAIL"},
             {"name": "복구 시도와 독립 확인", "expected": expected, "actual": detail,
              "duration_ms": mttr_ms, "status": "PASS" if verdict else "FAIL"},
+            {"name": "주문 중복 · 유실 확인", "expected": "손대지 않은 주문 세션의 항목이 장애 전후 같다",
+             "actual": (f"세션 {order_check['compared']}개 비교 · 다름 {order_check['issues']}건"
+                        if order_check.get("measured") else order_check.get("reason", "미측정")),
+             "status": ("FAIL" if order_check["issues"] else "PASS") if order_check.get("measured") else "SKIP"},
         ]
         return {"fault_type": fault, "target": target, "injection_id": injection_id,
                 "incident_id": incident_id, "passed": verdict, "detail": detail,
                 "synthetic_requests": request_count, "mttd_ms": mttd_ms, "mttr_ms": mttr_ms,
-                "attempts": attempts, "steps": steps}
+                "attempts": attempts, "steps": steps, "integrity": order_check}
     finally:
         cleanup_started = time.monotonic()
         cleared = _clear(run_id, injection_id)
@@ -617,7 +637,12 @@ def _run(run: dict) -> None:
                 _log_failure("workflow iteration failed run_id=%s iteration=%s", run_id, no)
             _record_verification(result)
             iteration_status = "PASS" if result.get("passed") else "FAIL"
-            if result.get("detail") == "NEEDS_REVIEW":
+            # F-5 의 기대 결과는 "최대 3회 생성·검증 → 필요 시 NEEDS_REVIEW" 다. 그렇게 끝났으면
+            # 기대대로 동작한 것이므로 성공(PASS)으로 센다(2026-11-09 팀 결정). 다른 유형의
+            # NEEDS_REVIEW 는 종전대로 확인 필요 칸에 둔다
+            if result.get("detail") == "NEEDS_REVIEW" and fault == "F-5" and result.get("passed"):
+                iteration_status = "PASS"
+            elif result.get("detail") == "NEEDS_REVIEW":
                 iteration_status = "NEEDS_REVIEW"
             elif ("approval" in (result.get("detail") or "").lower()
                   or "승인 대기" in (result.get("detail") or "")):

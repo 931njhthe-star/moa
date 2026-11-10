@@ -48,7 +48,7 @@ def test_grid_shows_strategy_and_detection_metric():
     """평가 질문(PRD 1.2 P3-2) 두 가지 — 복구 전략 4종 · 유형별 감지 메트릭이 화면에 있는가."""
     html = ov.trials_html(ov.trial_summary(mock.OPS_TRIALS))
     assert copy.OD_STRATEGY in html
-    for strategy in ("대체 전환", "재시작 · 재개", "재생성 → 대체모델", "재연결 → 캐시"):
+    for strategy in ("대체 전환", "재시작 · 재개", "재생성 → 확인 필요", "재연결 → 캐시"):
         assert strategy in html
     for metric in ("FT-01 timeout_count", "FT-02 agent_error_count",
                    "FT-03 db_connection_error", "FT-04 schema_error_rate"):
@@ -305,3 +305,26 @@ def test_a_run_without_a_verdict_does_not_claim_zero_matches():
     assert "run_new" in html
     assert "일치" not in html
     assert "격자" in html
+
+
+def test_needs_review_cell_is_not_drawn_as_approval():
+    """F-5 의 NEEDS_REVIEW 는 사람 승인이 아니다 — "확인 필요"로 그리고, 분모에는 남되 성공으로 세지 않는다."""
+    trials = {"rows": [{"fault": "F-5", "cells": [{"result": "review"}, {"result": "auto", "sec": 4}]}],
+              "total_runs": 2}
+    s = ov.trial_summary(trials)
+    assert (s["ok"], s["valid"]) == (1, 2)
+    html = ov._trial_cell({"result": "review"}, "F-5")
+    assert copy.OD_CELL_REVIEW in html and copy.OD_CELL_APPROVED not in html
+
+
+def test_f4_row_counts_in_auto_rate_without_mttr_over_mark():
+    """F-4 가 일반 줄로 오면 무인 복구율에 들어가고, 60초 차단을 거치므로 초과 표시를 하지 않는다(2026-11-09)."""
+    trials = {"total_runs": 30, "f4": None, "rows": [
+        {"fault": "F-1", "cells": [{"result": "auto", "sec": 40}]},
+        {"fault": "F-4", "cells": [{"result": "auto", "sec": 75}, {"result": "approved", "sec": None}]},
+    ]}
+    s = ov.trial_summary(trials)
+    assert (s["ok"], s["valid"]) == (2, 3)
+    assert s["max_sec"] == 40               # F-4 의 75초는 SC-3 최대값에 넣지 않는다
+    html = ov.trials_html(s)
+    assert "moa-tc-over" not in html

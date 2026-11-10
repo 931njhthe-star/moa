@@ -225,7 +225,7 @@ FAULT_STRATEGY = {
     "F-2": "재시도 → 전환",
     "F-3": "재시작 · 재개",
     "F-4": "회로 차단 · probe",
-    "F-5": "재생성 → 대체모델",
+    "F-5": "재생성 → 확인 필요",          # PRD 5.6 F-5 — 같은 입력으로 재생성, 안 되면 NEEDS_REVIEW (대체 모델로 넘기지 않는다)
     "F-6": "재연결 → 캐시",
 }
 # 서버 사건의 장애 코드 → 시험 유형(F-n). 서버가 `fault` 를 주면 그것을 먼저 쓴다
@@ -307,13 +307,14 @@ OD_STRATEGY = "복구 전략"
 OD_SUCCESS = "성공"
 OD_F4_NOTE = "별도 · 분모 밖"
 OD_CELL_APPROVED = "승인"
+OD_CELL_REVIEW = "확인 필요"
 OD_CELL_FAILED = "실패"
 OD_CELL_INVALID = "무효"
 OD_CELL_RUNNING = "진행 중"
 OD_CELL_SWITCHED = "통과"
 OD_CELL_NOT_SWITCHED = "안 됨"
 OD_CELL_PENDING = "--"
-OD_LEGEND = [("auto", "사람 없이 복구"), ("approved", "승인 · 수동"), ("failed", "실패"),
+OD_LEGEND = [("auto", "사람 없이 복구"), ("approved", "승인 · 수동"), ("review", "확인 필요"), ("failed", "실패"),
              ("invalid", "무효 · 분모 제외"), ("pending", "아직 안 함")]
 OD_TOTAL = "합계 {ok}/{valid} · {pct}%"
 OD_EMPTY = "아직 시험 결과를 받지 못했어요"
@@ -392,7 +393,7 @@ OT2_ASK = "얼마나 잘 복구되나"
 OT2_NOTE = "대상을 골라 반복해요 · 복구는 시험 워크플로가 하고 상시 감시는 비켜서요"
 OT2_MODES = {
     "custom": ("직접 설정 · 1~10회", "유형 · 대상 · 횟수를 골라요 (기본 1회)"),
-    "full": ("전체 복구 측정 · 25회", "무인 복구율 분모를 만들어요 · F-4 제외"),
+    "full": ("전체 복구 측정 · 30회", "무인 복구율 분모를 만들어요 · F-1 ~ F-6 각 5회"),
 }
 OT2_L_FAULT = "유형"
 OT2_L_TARGET = "대상"

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1050" viewBox="0 0 1280 1050" role="img" aria-labelledby="title desc">
 <title id="title">MOA · Multi-Agent Order Processing</title><desc id="desc">Group chat orders pass through orchestration, intent extraction, menu matching, validation and review to produce a consolidated order.</desc>
 <rect width="1280" height="1050" fill="#f9fbf8"/>
-<text x="70" y="67" font-family="Arial,'Noto Sans KR',sans-serif" fill="#122d1c" font-size="38" font-weight="700">MOA · 멀티 에이전트 처리 흐름</text>
+<text x="70" y="67" font-family="Arial,'Noto Sans KR',sans-serif" fill="#122d1c" font-size="38" font-weight="700">MOA · Multi-Agent Order Processing</text>
 <text x="70" y="102" font-family="Arial,'Noto Sans KR',sans-serif" fill="#5a6e60" font-size="21">From group chat to a consolidated order sheet</text>
 <rect x="74" y="130" width="490" height="95" rx="20" fill="#ffffff" stroke="#c9dccb" stroke-width="2"/>
 <circle cx="117" cy="177" r="24" fill="#e2f1e3"/>

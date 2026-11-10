@@ -2,7 +2,7 @@
 
 <img src="docs/images/readme-banner.svg" alt="Moa 배너: 단톡방 주문 대화가 주문서 한 장으로 정리되고, 자동 복구가 정상 상태를 지킨다" width="100%">
 
-<h1>Moa — OrderOps AI Auto Healing</h1>
+<h1>Moa AI Auto Healing</h1>
 
 <h3>단톡방 주문 대화를, 주문서 한 장으로. 장애가 나도 멈추지 않게.</h3>
 

@@ -1,5 +1,18 @@
 <div align="center">
 
+<img src="docs/images/readme-banner.svg" alt="Moa 배너: 단톡방 주문 대화가 주문서 한 장으로 정리되고, 자동 복구가 정상 상태를 지킨다" width="100%">
+
+<h1>Moa — OrderOps AI Auto Healing</h1>
+
+<h3>단톡방 주문 대화를, 주문서 한 장으로. 장애가 나도 멈추지 않게.</h3>
+
+<p><code>FastAPI</code> &nbsp;·&nbsp; <code>LangGraph</code> &nbsp;·&nbsp; <code>Multi-Agent</code> &nbsp;·&nbsp; <code>Auto Healing</code> &nbsp;·&nbsp; <code>Docker Compose</code> &nbsp;·&nbsp; <code>GitHub Actions</code></p>
+
+</div>
+
+> 단톡방 주문 대화를 붙여넣으면 갈 매장을 찾아 메뉴 묶음 · 수량 · 주문한 사람 · 합계 예상 금액이 담긴 주문서 한 장을 만들어 주는 서비스입니다.
+> 그리고 이 서비스를 지키는 **장애 자가 복구(Auto Healing) 워크플로**가 장애를 먼저 알아채고, 허용된 조치로 고치고, 정상화를 수치로 증명합니다.
+
 ## 프로젝트 개요
 
 모임에서 커피를 한꺼번에 시킬 때 담당자는 대화를 위아래로 훑으며 약칭("아아 톨") · 옵션 · 변경 · 취소를 반영하고 금액을 손으로 계산합니다. AI에 맡겨도 두 가지 문제가 남습니다. **AI가 없는 메뉴나 가격을 지어낼 수 있고**, **처리 중 장애가 나면 주문이 겹치거나 사라질 수 있습니다.**
